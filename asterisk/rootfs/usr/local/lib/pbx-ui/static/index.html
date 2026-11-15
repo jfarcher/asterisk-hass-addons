@@ -438,7 +438,7 @@ function renderPhones() {
   }
 
   const others = data.others;
-  let othersBlock = null;
+  let othersBlock = [];
   if (others.length) {
     othersBlock = [
       h("h3", { class: "group" }, "Also on this system"),
@@ -462,7 +462,7 @@ function renderPhones() {
       })),
     ];
   }
-  root.replaceChildren(head, body, othersBlock || "");
+  root.replaceChildren(head, body, ...othersBlock);
 }
 
 function kindChoices(onPick) {
