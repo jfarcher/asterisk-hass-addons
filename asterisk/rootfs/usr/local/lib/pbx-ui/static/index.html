@@ -500,6 +500,7 @@ function renderPhones() {
 function provisioningUrl() {
   const p = data.provisioning;
   if (!p.path) return "";
+  if (p.public_url) return `${p.public_url}${p.path}`;
   return `http://${data.server.address || location.hostname}:${p.port}${p.path}`;
 }
 
@@ -591,6 +592,10 @@ function provisioningCard() {
           h("input", { type: "text", class: "mono", readonly: true, value: url, "aria-label": "Setup address" }),
           h("button", { type: "button", class: "icon-only", title: "Copy", onclick: () => copyText(url) }, icon("copy")),
         ),
+        h("span", { class: "hint" },
+          p.public_url ? "Through your reverse proxy. " : "",
+          h("button", { type: "button", class: "link", onclick: publicUrlDialog },
+            p.public_url ? "Change" : "Phones reach Home Assistant through a reverse proxy?")),
       ),
       h("ol", { class: "steps small" },
         h("li", {}, "Enter the address above in the phone's own web page (where it asks for a provisioning or auto-provision server), and restart it."),
@@ -610,6 +615,35 @@ function provisioningCard() {
       ),
     ] : null,
   );
+}
+
+function publicUrlDialog() {
+  const p = data.provisioning;
+  const target = `http://${data.server.address || "<home-assistant-ip>"}:${p.port}`;
+  const nginx = `location /p/ {\n    proxy_pass ${target};\n}`;
+  openDialog({
+    title: "Setup address through a reverse proxy",
+    intro: "If phones should download their settings through a proxy such as NGINX, enter the address they use. The setup address shown on this page then starts with it.",
+    body: [
+      field("Setup address as phones see it",
+        h("input", { type: "text", name: "public_url", class: "mono", value: p.public_url || "", placeholder: "e.g. https://ha.example.com" }),
+        "Just the start: scheme, name and port if needed. /p/… is added for you. Leave blank to use the add-on's own address."),
+      h("div", { class: "field" },
+        h("span", { class: "label" }, "Add this to your proxy (NGINX)"),
+        h("div", { class: "inline", style: "align-items:flex-start" },
+          h("pre", { class: "console", style: "height:auto;margin:0;flex:1" }, nginx),
+          h("button", { type: "button", class: "icon-only", title: "Copy", onclick: () => copyText(nginx) }, icon("copy"))),
+        h("span", { class: "hint" }, "Inside the server block for that name. Home Assistant itself doesn't use /p/. Some older phones can only use http://, not https://."),
+      ),
+    ],
+    footer: [cancelButton(), h("button", { type: "submit", class: "primary" }, "Save")],
+    onsubmit: async (fd) => {
+      await api("PUT", "api/provisioning", { public_url: fd.get("public_url") });
+      dlg.close();
+      await refresh();
+      toast("Saved");
+    },
+  });
 }
 
 function addressDialog() {

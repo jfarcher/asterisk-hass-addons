@@ -35,6 +35,8 @@ Open the add-on's web UI (**_OPEN WEB UI_**, or the sidebar panel) to set up you
 
   Phones are given Home Assistant's LAN IP address, found automatically. If that's the wrong one (for example with several networks), change it under **Address phones connect to**.
 
+  To have phones download their settings through a reverse proxy such as NGINX, use **Phones reach Home Assistant through a reverse proxy?** under the setup address. It shows the `location /p/` block to add to the proxy. Home Assistant itself can't serve these files, because everything it serves needs a login.
+
   You can also type a phone's MAC address under **More options** when adding or editing it. Settings are served on port 8097 (the [`provisioning_port`](#option-provisioning_port) option) to phones that know the secret address, and only for MAC addresses you've set up. They travel unencrypted on your network.
 - **Outside lines**: connect a phone service provider (SIP trunk / VoIP account) with the server, username and password they gave you. Choose which phones ring for incoming calls, and how outside numbers are dialled: either just dial the number (anything with 5 or more digits, or starting with `+`), or dial a prefix such as `9` first.
 - **Apps**: let other Home Assistant apps answer, place and connect calls through ARI (the Asterisk REST Interface). Turn ARI on with **Allow apps to control calls**, and add a login for each app. You can also send a range of numbers to an app, such as 800-899. Apps we know about, like [Kiosk Intercom Gateway](https://github.com/jfarcher/kiosk-intercom-gateway), connect with one click: press **Connect**, then **Set up Asterisk for me** in the gateway. The status shows **Connected** once the app is signed in.

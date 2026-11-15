@@ -284,6 +284,7 @@ class Backend:
             "enabled": prov["enabled"],
             "port": self.settings.provision_port,
             "path": f"/p/{prov['token']}/" if prov["token"] else "",
+            "public_url": prov["public_url"],
             "waiting": waiting,
             "fetched": fetched,
             "vendors": provision.VENDORS,
@@ -400,6 +401,8 @@ class Backend:
             if not isinstance(enabled, bool):
                 raise model.ValidationError("Invalid value.", "enabled")
             prov["enabled"] = enabled
+            if "public_url" in data:
+                prov["public_url"] = model.clean_public_url(data["public_url"])
             if data.get("reset") or not prov["token"]:
                 prov["token"] = model.generate_password(24)
             self.store.save(config)  # no Asterisk reload needed

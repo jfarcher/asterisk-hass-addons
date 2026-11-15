@@ -3,6 +3,12 @@
 
 # Changelog
 
+## 6.8.0
+
+### New Features
+
+- **Setup address through a reverse proxy.** If phones should download their settings through a proxy such as NGINX, set the address they use (for example `https://ha.example.com`) under Automatic setup. The setup address then starts with it, and the dialog shows the NGINX `location /p/` block to add, with Home Assistant's address filled in. Phones still sign in to Asterisk on Home Assistant's LAN address unless you change **Address phones connect to**.
+
 ## 6.7.1
 
 ### Bug Fixes

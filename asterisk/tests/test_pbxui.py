@@ -273,6 +273,11 @@ class Network(unittest.TestCase):
         self.assertEqual(model.validate_network({"sip_address": " 192.168.1.10 "}), {"sip_address": "192.168.1.10"})
         self.assertEqual(model.validate_network({"sip_address": "http://ha.local/"}), {"sip_address": "ha.local"})
         self.assertEqual(model.validate_network({}), {"sip_address": ""})
+        self.assertEqual(model.clean_public_url(" https://ha.example.com/ "), "https://ha.example.com")
+        self.assertEqual(model.clean_public_url("http://ha.example.com:8443"), "http://ha.example.com:8443")
+        for bad in ["ha.example.com", "https://ha.example.com/p/x", "ftp://x", "https://x:99999", "https://a b"]:
+            with self.assertRaises(ValidationError, msg=bad):
+                model.clean_public_url(bad)
         for bad in ["192.168.1.10:5060", "a b", "x;y"]:
             with self.assertRaises(ValidationError, msg=bad):
                 model.validate_network({"sip_address": bad})

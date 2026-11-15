@@ -57,6 +57,9 @@ STASIS_APP_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 ROUTE_PREFIX_RE = re.compile(r"^[0-9]{1,3}$")
 
 PROVISION_TOKEN_RE = re.compile(r"^[A-Za-z0-9]{16,64}$")
+PUBLIC_URL_RE = re.compile(
+    r"^(https?)://([A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)(?::([0-9]{1,5}))?$"
+)
 
 ARI_URL = "http://127.0.0.1:8088"
 HANDOFF_VERSION = 1
@@ -98,7 +101,7 @@ def default_config():
         "outbound": {"mode": "direct", "prefix": "9", "trunk": None},
         "ari": {"enabled": False},
         "apps": [],
-        "provisioning": {"enabled": False, "token": ""},
+        "provisioning": {"enabled": False, "token": "", "public_url": ""},
         "network": {"sip_address": ""},
     }
 
@@ -510,7 +513,11 @@ def normalize(config):
     token = str(prov.get("token") or "")
     if token and not PROVISION_TOKEN_RE.match(token):
         raise ValidationError("Invalid provisioning token.")
-    clean["provisioning"] = {"enabled": _bool(prov, "enabled", False), "token": token}
+    clean["provisioning"] = {
+        "enabled": _bool(prov, "enabled", False),
+        "token": token,
+        "public_url": clean_public_url(prov.get("public_url")),
+    }
     clean["network"] = validate_network(config.get("network") or {})
     for app in config.get("apps", []):
         app_id = str(app.get("id") or "")
@@ -518,6 +525,21 @@ def normalize(config):
             raise ValidationError(f"Invalid app id {app_id!r}.")
         clean["apps"].append(validate_app(app, {"id": app_id}, others=clean["apps"]))
     return clean
+
+
+def clean_public_url(value):
+    """'https://ha.example.com' (scheme, host, optional port) or ''."""
+    url = str(value or "").strip().rstrip("/")
+    if not url:
+        return ""
+    match = PUBLIC_URL_RE.match(url)
+    if not match or (match.group(3) and not 1 <= int(match.group(3)) <= 65535):
+        raise ValidationError(
+            "Enter just the start of the address, like https://ha.example.com "
+            "(no path: /p/... is added for you).",
+            "public_url",
+        )
+    return url
 
 
 def validate_network(data):
