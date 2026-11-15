@@ -38,7 +38,7 @@ Full documentation, including every option, is in [DOCS.md](asterisk/DOCS.md) (a
 
 ## Where this came from
 
-This project started as a fork of [TECH7Fox/asterisk-hass-addons](https://github.com/TECH7Fox/asterisk-hass-addons), and it still stands on that work. The way Asterisk is built and packaged, the startup and certificate handling, auto-created extensions for Home Assistant people, the `custom` config override, the mailbox server and the CI that publishes images all come from TECH7Fox, felipecrs and the other contributors there. Thank you.
+This add-on is maintained by [Jon Archer](https://github.com/jfarcher). It started as a fork of [TECH7Fox/asterisk-hass-addons](https://github.com/TECH7Fox/asterisk-hass-addons), and it still stands on that work. The way Asterisk is built and packaged, the startup and certificate handling, auto-created extensions for Home Assistant people, the `custom` config override, the mailbox server and the CI that publishes images all come from TECH7Fox, felipecrs and the other contributors there. Thank you.
 
 It is now developed separately, for two reasons:
 
