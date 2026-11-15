@@ -81,6 +81,7 @@ class Backend:
         self._server_address = None
         self._status_cache = (0.0, None)
         self.seen = provision.Seen()
+        self.provision_error = None  # set if the phone setup port couldn't be opened
 
     # -- Asterisk access ---------------------------------------------------
 
@@ -285,6 +286,7 @@ class Backend:
             "port": self.settings.provision_port,
             "path": f"/p/{prov['token']}/" if prov["token"] else "",
             "public_url": prov["public_url"],
+            "error": self.provision_error,
             "waiting": waiting,
             "fetched": fetched,
             "vendors": provision.VENDORS,
@@ -746,6 +748,23 @@ class ProvisionHandler(http.server.BaseHTTPRequestHandler):
     do_HEAD = do_GET
 
 
+class Server(http.server.ThreadingHTTPServer):
+    """Never shares its port: with SO_REUSEPORT (Python's default in newer versions)
+    Linux would let another app listen on the same port and split connections
+    between us, so phones could silently get the other app's answers."""
+
+    allow_reuse_port = False
+    daemon_threads = True
+
+    def server_bind(self):
+        if hasattr(socket, "SO_REUSEPORT"):
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 0)
+            except OSError:
+                pass
+        super().server_bind()
+
+
 def generate(settings):
     """Write the Asterisk files from pbx.json (used at add-on start)."""
     store = model.Store(settings.config_path, settings.asterisk_dir)
@@ -763,17 +782,19 @@ def serve(settings):
     ProvisionHandler.backend = backend
     if settings.provision_port:
         try:
-            prov_server = http.server.ThreadingHTTPServer(
-                ("0.0.0.0", settings.provision_port), ProvisionHandler
-            )
+            prov_server = Server(("0.0.0.0", settings.provision_port), ProvisionHandler)
         except OSError as err:
             log.error("Automatic phone setup can't use port %s: %s", settings.provision_port, err)
+            backend.provision_error = (
+                f"Port {settings.provision_port} is already used by another app on this "
+                "Home Assistant, so phones can't download their settings. Change "
+                "“Phone Setup Port” in this add-on's Configuration (for example to 8197) "
+                "and restart the add-on."
+            )
         else:
-            prov_server.daemon_threads = True
             threading.Thread(target=prov_server.serve_forever, name="provisioning", daemon=True).start()
             log.info("Automatic phone setup listening on port %s", settings.provision_port)
-    server = http.server.ThreadingHTTPServer(("0.0.0.0", settings.port), Handler)
-    server.daemon_threads = True
+    server = Server(("0.0.0.0", settings.port), Handler)
     log.info("Web UI listening on port %s", settings.port)
     threading.current_thread().name = "pbx-ui"
     server.serve_forever()

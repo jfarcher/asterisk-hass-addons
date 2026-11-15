@@ -576,6 +576,7 @@ function provisioningCard() {
       ),
       h("label", { class: "switch" }, toggle, h("span", {})),
     ),
+    p.error ? h("div", { class: "banner bad", style: "margin:14px 0 0" }, p.error) : null,
     p.enabled && url ? [
       h("div", { class: "field", style: "margin:14px 0 6px" },
         h("span", { class: "label" }, "Address phones connect to"),

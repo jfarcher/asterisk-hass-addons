@@ -3,6 +3,13 @@
 
 # Changelog
 
+## 6.8.2
+
+### Bug Fixes
+
+- If another app already uses the phone setup port, the Phones tab now says so and how to change it (**Phone Setup Port** in Configuration). Before, it only appeared in the add-on log, and phones got the other app's "Not found".
+- The web UI's servers never share a port with another app.
+
 ## 6.8.1
 
 ### Bug Fixes
