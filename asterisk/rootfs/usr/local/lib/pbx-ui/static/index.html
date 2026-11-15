@@ -201,6 +201,15 @@
   .toast.bad { background: var(--bad); color: #fff; }
   .toast.warn { background: var(--warn); color: #fff; }
 
+  .switch { position: relative; display: inline-block; width: 44px; height: 24px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch span { position: absolute; inset: 0; background: var(--idle-soft); border: 1px solid var(--line); border-radius: 999px; cursor: pointer; transition: background .15s; }
+  .switch span::before { content: ""; position: absolute; width: 18px; height: 18px; left: 2px; top: 2px; background: var(--card); border-radius: 50%; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .15s; }
+  .switch input:checked + span { background: var(--accent); border-color: var(--accent); }
+  .switch input:checked + span::before { transform: translateX(20px); }
+  .switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .banner ul { margin: 6px 0 0; padding-left: 1.2em; }
+
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -215,15 +224,18 @@
   </header>
 
   <div id="configError" class="banner bad" hidden></div>
+  <div id="overrides"></div>
 
   <nav class="tabs" role="tablist">
     <button role="tab" data-tab="phones" aria-selected="true">Phones</button>
     <button role="tab" data-tab="lines" aria-selected="false">Outside lines</button>
+    <button role="tab" data-tab="apps" aria-selected="false">Apps</button>
     <button role="tab" data-tab="advanced" aria-selected="false">Advanced</button>
   </nav>
 
   <section id="tab-phones"></section>
   <section id="tab-lines" hidden></section>
+  <section id="tab-apps" hidden></section>
   <section id="tab-advanced" hidden></section>
 </div>
 
@@ -247,6 +259,7 @@ const ICONS = {
   copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
   refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/>',
+  app: '<path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/>',
 };
 
 function icon(name) {
@@ -412,7 +425,26 @@ function render() {
   // Don't rebuild the lines tab under someone who is typing in it.
   const linesTab = document.getElementById("tab-lines");
   if (!linesTab.contains(document.activeElement) || document.activeElement.tagName === "BUTTON") renderLines();
+  renderOverrides();
+  renderApps();
   renderAdvanced();
+}
+
+const OVERRIDE_EFFECT = {
+  "pjsip.conf": "Phones and outside lines added here won't load",
+  "extensions.conf": "Outside lines and app numbers won't work, and incoming calls may not ring",
+  "ari.conf": "App logins and the ARI switch on the Apps tab have no effect",
+};
+
+function renderOverrides() {
+  const root = document.getElementById("overrides");
+  const broken = (data.overrides || []).filter((o) => o.missing.length);
+  root.replaceChildren(...broken.map((o) => h("div", { class: "banner warn" },
+    h("strong", {}, `Your own asterisk/custom/${o.file} replaces the add-on's. `),
+    `${OVERRIDE_EFFECT[o.file]} until you add:`,
+    h("ul", {}, o.missing.map((m) => h("li", {}, h("code", {}, m)))),
+    h("div", { style: "margin-top:6px" }, "Compare with the add-on's own copy in asterisk/default, then restart the add-on."),
+  )));
 }
 
 function renderPhones() {
@@ -592,6 +624,242 @@ function outboundCard() {
   );
 }
 
+function appStatus(app) {
+  if (!data.config.ari.enabled) return { cls: "idle", text: "ARI is off" };
+  if (!data.status.available) return { cls: "idle", text: "Unknown" };
+  return (data.status.apps || []).includes(app.stasis_app)
+    ? { cls: "ok", text: "Connected" }
+    : { cls: "warn", text: "Waiting for the app" };
+}
+
+function routeLabel(route) {
+  if (!route) return "No numbers are sent to it";
+  const pad = route.length - route.prefix.length;
+  return `Numbers ${route.prefix}${"0".repeat(pad)} to ${route.prefix}${"9".repeat(pad)} go to it`;
+}
+
+function renderApps() {
+  const root = document.getElementById("tab-apps");
+  const { ari, apps } = data.config;
+  const head = h("div", { class: "section-head" },
+    h("div", {},
+      h("h2", {}, "Apps"),
+      h("p", { class: "muted small" },
+        "Let other Home Assistant apps answer, place and connect calls. ",
+        "Asterisk calls this ARI (the Asterisk REST Interface)."),
+    ),
+    h("button", { onclick: () => appDialog() }, "Add an app"),
+  );
+
+  const toggle = h("input", {
+    type: "checkbox", checked: ari.enabled, "aria-label": "Allow apps to control calls",
+    onchange: async (e) => {
+      e.target.disabled = true;
+      try {
+        const res = await api("PUT", "api/ari", { enabled: e.target.checked });
+        toast(res.warning || (e.target.checked ? "Apps can now control calls" : "ARI turned off"), res.warning ? "warn" : "");
+        await refresh();
+      } catch (err) {
+        toast(err.message, "bad");
+        e.target.checked = !e.target.checked;
+      } finally {
+        e.target.disabled = false;
+      }
+    },
+  });
+  const switchCard = h("div", { class: "card row" },
+    h("div", { class: "info" },
+      h("div", { class: "name" }, "Allow apps to control calls"),
+      h("div", { class: "muted small" }, ari.enabled
+        ? "On. Apps sign in with the logins below."
+        : "Off. Apps can't connect. Adding an app turns this on."),
+    ),
+    h("label", { class: "switch" }, toggle, h("span", {})),
+  );
+
+  const addedPresets = new Set(apps.map((a) => a.preset));
+  const presetCards = Object.entries(data.presets)
+    .filter(([key]) => !addedPresets.has(key))
+    .map(([key, p]) => h("div", { class: "card row" },
+      h("span", { class: "icon-bubble" }, icon("app")),
+      h("div", { class: "info" },
+        h("div", { class: "name" }, p.name),
+        h("div", { class: "muted small" }, p.blurb),
+      ),
+      h("div", { class: "actions" },
+        h("button", { class: "primary", onclick: (e) => connectPreset(key, e.target) }, "Connect"),
+      ),
+    ));
+
+  const appCards = apps.map((app) => {
+    const st = appStatus(app);
+    return h("div", { class: "card row" },
+      h("span", { class: "icon-bubble" }, icon("app")),
+      h("div", { class: "info" },
+        h("div", { class: "name" }, app.name),
+        h("div", { class: "muted small" }, `Login ${app.username} · ${routeLabel(app.route)}`,
+          app.read_only ? " · read only" : ""),
+      ),
+      h("span", { class: `pill ${st.cls}` }, st.text),
+      h("div", { class: "actions" },
+        h("button", { onclick: () => appDetailsDialog(app) }, "Connection details"),
+        h("button", { onclick: () => appDialog(app) }, "Edit"),
+      ),
+    );
+  });
+
+  root.replaceChildren(
+    head,
+    switchCard,
+    appCards.length ? h("h3", { class: "group" }, "Connected apps") : "",
+    appCards.length ? h("div", { class: "list" }, appCards) : "",
+    presetCards.length ? h("h3", { class: "group" }, "Ready to connect") : "",
+    presetCards.length ? h("div", { class: "list" }, presetCards) : "",
+  );
+}
+
+async function connectPreset(key, button) {
+  button.disabled = true;
+  try {
+    const res = await api("POST", "api/apps", { preset: key });
+    if (res.warning) toast(res.warning, "warn");
+    await refresh();
+    appDetailsDialog(res.app, true);
+  } catch (err) {
+    toast(err.message, "bad");
+    button.disabled = false;
+  }
+}
+
+function appDialog(app) {
+  const a = app || {};
+  const pw = passwordInput("appPw", "password", a.password || randomPassword());
+  const regen = h("button", { type: "button", onclick: () => { pw.input.value = randomPassword(); pw.input.type = "text"; } }, "New password");
+  const route = a.route || null;
+  const sendNumbers = h("input", { type: "checkbox", name: "send", checked: app ? Boolean(route) : true });
+  const prefix = h("input", { type: "text", name: "route_prefix", class: "mono", inputmode: "numeric", maxlength: "3", value: route ? route.prefix : "", style: "flex:0 0 5em", "aria-label": "Starting digits" });
+  const length = h("select", { name: "route_length", style: "width:auto", "aria-label": "Number length" },
+    [2, 3, 4].map((n) => h("option", { value: String(n), selected: (route ? route.length : 3) === n }, `${n} digits`)));
+
+  openDialog({
+    title: app ? `Edit ${a.name}` : "Add an app",
+    intro: app ? null : "For apps that use Asterisk's ARI. Check the app's documentation for the names it expects.",
+    body: [
+      field("Name", h("input", { type: "text", name: "name", value: a.name || "", placeholder: "e.g. Call recorder", maxlength: "60" }),
+        "Just for you, so you can tell apps apart."),
+      h("div", { class: "grid2" },
+        field("Login name", h("input", { type: "text", name: "username", class: "mono", value: a.username || "", autocomplete: "off" })),
+        field("App name in Asterisk", h("input", { type: "text", name: "stasis_app", class: "mono", value: a.stasis_app || "", autocomplete: "off" }),
+          "Also called the Stasis app."),
+      ),
+      h("div", { class: "field" },
+        h("label", { class: "check" }, sendNumbers,
+          h("span", {}, "Send numbers to this app",
+            h("span", { class: "hint", style: "display:block" }, "Calls to these numbers from your phones go to the app instead."))),
+        h("div", { class: "inline", style: "margin-left:26px;flex-wrap:wrap" },
+          h("span", { class: "small" }, "Numbers starting with"), prefix,
+          h("span", { class: "small" }, "that are"), length, h("span", { class: "small" }, "long")),
+      ),
+      h("details", { class: "more" },
+        h("summary", {}, "More options"),
+        h("div", { class: "field" },
+          h("label", { for: "appPw" }, "Password"),
+          h("div", { class: "inline" }, pw.row, regen),
+        ),
+        h("div", { class: "field" },
+          h("label", { class: "check" },
+            h("input", { type: "checkbox", name: "read_only", checked: Boolean(a.read_only) }),
+            h("span", {}, "Read only", h("span", { class: "hint", style: "display:block" }, "The app can see calls but not answer, place or change them."))),
+        ),
+      ),
+    ],
+    footer: [
+      app ? h("button", { type: "button", class: "danger", onclick: () => confirmRemoveApp(a) }, "Remove") : null,
+      h("span", { class: "spacer" }),
+      cancelButton(),
+      h("button", { type: "submit", class: "primary" }, app ? "Save" : "Add"),
+    ],
+    onsubmit: async (fd) => {
+      const payload = {
+        name: fd.get("name"),
+        username: fd.get("username"),
+        stasis_app: fd.get("stasis_app"),
+        password: fd.get("password"),
+        read_only: fd.get("read_only") === "on",
+        route: fd.get("send") === "on" ? { prefix: fd.get("route_prefix"), length: Number(fd.get("route_length")) } : null,
+      };
+      if (a.preset) payload.preset = a.preset;
+      const res = app
+        ? await api("PUT", `api/apps/${encodeURIComponent(a.id)}`, payload)
+        : await api("POST", "api/apps", payload);
+      if (res.warning) toast(res.warning, "warn");
+      await refresh();
+      if (app) { dlg.close(); toast("Saved"); } else appDetailsDialog(res.app, true);
+    },
+  });
+}
+
+function confirmRemoveApp(app) {
+  openDialog({
+    title: `Remove ${app.name}?`,
+    body: h("p", {}, "Its login stops working",
+      app.route ? ` and ${routeLabel(app.route).replace(" go to it", "")} stop going to it` : "", "."),
+    footer: [
+      h("button", { type: "button", onclick: () => appDialog(app) }, "Keep it"),
+      h("button", { type: "submit", class: "primary", style: "background:var(--bad);border-color:var(--bad)" }, "Remove"),
+    ],
+    onsubmit: async () => {
+      const res = await api("DELETE", `api/apps/${encodeURIComponent(app.id)}`);
+      dlg.close();
+      toast(res.warning || `${app.name} removed`, res.warning ? "warn" : "");
+      await refresh();
+    },
+  });
+}
+
+function appDetailsDialog(app, justAdded) {
+  const server = data.server.address || location.hostname;
+  const secret = h("dd", {}, "•".repeat(12));
+  let shown = false;
+  const copyBtn = (value) => h("button", { type: "button", class: "icon-only", title: "Copy", onclick: () => copyText(value) }, icon("copy"));
+  const rows = [];
+  const add = (label, value) => rows.push(h("dt", {}, label), h("dd", {}, value), copyBtn(value));
+  add("ARI address", data.ari_url);
+  add("Login name", app.username);
+  rows.push(h("dt", {}, "Password"), secret, h("div", { class: "inline" },
+    h("button", { type: "button", class: "icon-only", title: "Show password", onclick: () => {
+      shown = !shown;
+      secret.textContent = shown ? app.password : "•".repeat(12);
+    } }, icon("eye")),
+    copyBtn(app.password)));
+  add("App name", app.stasis_app);
+
+  const isKiosk = app.preset === "kiosk-intercom-gateway";
+  const steps = isKiosk
+    ? h("ol", { class: "steps small" },
+        h("li", {}, "Open Kiosk Intercom Gateway from the sidebar."),
+        h("li", {}, "Press ", h("strong", {}, "Set up Asterisk for me"), ". It finds these details by itself and doesn't change any Asterisk files."),
+        h("li", {}, "It shows as “Connected” here once it's signed in."),
+      )
+    : h("ol", { class: "steps small" },
+        h("li", {}, "Enter these in the app's Asterisk or ARI settings."),
+        h("li", {}, "It shows as “Connected” here once it's signed in."),
+      );
+
+  openDialog({
+    title: justAdded ? `${app.name} is ready to connect` : `Connect ${app.name}`,
+    body: [
+      steps,
+      h("dl", { class: "kv card pad", style: "margin:0" }, rows),
+      h("p", { class: "hint", style: "margin-top:12px" },
+        `That address works for apps on this Home Assistant. From another computer, use http://${server}:8088.`),
+      isKiosk ? h("p", { class: "hint", style: "margin-top:6px" },
+        "With an older version of the gateway, paste the login name and password into its Configuration instead, and don't use its setup button: it would replace this add-on's dial plan.") : null,
+    ],
+    footer: h("button", { type: "submit", class: "primary" }, "Done"),
+  });
+}
+
 let consoleLog = "Type an Asterisk command below, or pick one of the shortcuts.\n";
 
 function renderAdvanced() {
@@ -617,6 +885,7 @@ function renderAdvanced() {
     ["Phones", "pjsip show endpoints"],
     ["Outside lines", "pjsip show registrations"],
     ["Calls", "core show channels"],
+    ["Apps", "ari show apps"],
     ["Dial plan", "dialplan show default"],
     ["Version", "core show version"],
   ];
@@ -981,7 +1250,7 @@ async function testRing(number) {
 
 function showTab(name) {
   document.querySelectorAll("nav.tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
-  for (const tab of ["phones", "lines", "advanced"]) document.getElementById(`tab-${tab}`).hidden = tab !== name;
+  for (const tab of ["phones", "lines", "apps", "advanced"]) document.getElementById(`tab-${tab}`).hidden = tab !== name;
   try { sessionStorage.setItem("pbx-tab", name); } catch (_) { /* storage blocked */ }
 }
 

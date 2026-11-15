@@ -35,6 +35,21 @@ HOP_BY_HOP = {
 INGRESS_CLIENTS = {"172.30.32.2", "127.0.0.1", "::1"}
 PERSON_RE = re.compile(r'^callerid="(.*)" <(\d+)>\s*$', re.MULTILINE)
 
+# A file in asterisk/custom replaces the add-on's own. These are the lines the
+# web UI needs in each one, with a hint for where they go.
+OVERRIDE_NEEDS = {
+    "pjsip.conf": [("#include pjsip_ui.conf", r"#include\s+\"?pjsip_ui\.conf")],
+    "extensions.conf": [
+        ("include => ui-apps  (in [default])", r"include\s*=>\s*ui-apps"),
+        ("include => ui-outbound  (in [default])", r"include\s*=>\s*ui-outbound"),
+        ("include => local-extensions  (in [default], after the two above)",
+         r"include\s*=>\s*local-extensions"),
+        ("a [local-extensions] context that rings phones", r"^\s*\[local-extensions\]"),
+        ("#include extensions_ui.conf", r"#include\s+\"?extensions_ui\.conf"),
+    ],
+    "ari.conf": [("#include ari_ui.conf", r"#include\s+\"?ari_ui\.conf")],
+}
+
 
 class Settings:
     def __init__(self):
@@ -42,6 +57,7 @@ class Settings:
         self.port = int(env("PBX_UI_PORT", "8087"))
         self.config_path = env("PBX_UI_CONFIG", "/config/asterisk/ui/pbx.json")
         self.asterisk_dir = env("PBX_UI_ASTERISK_DIR", "/etc/asterisk")
+        self.custom_dir = env("PBX_UI_CUSTOM_DIR", "/config/asterisk/custom")
         self.asterisk_http = ("127.0.0.1", int(env("PBX_UI_ASTERISK_HTTP_PORT", "8088")))
         self.ami_port = int(env("PBX_UI_AMI_PORT", "5038"))
         self.ami_user = env("PBX_UI_AMI_USER", "pbx-ui")
@@ -86,7 +102,7 @@ class Backend:
     def apply(self):
         """Reload Asterisk so saved changes take effect."""
         problems = []
-        for command in ("pjsip reload", "dialplan reload"):
+        for command in ("pjsip reload", "dialplan reload", "module reload res_ari.so"):
             ok, output = self.cli(command)
             if not ok:
                 problems.append(output or f"'{command}' failed")
@@ -118,8 +134,31 @@ class Backend:
                 status["available"] = True
         except (AmiError, OSError) as err:
             status["error"] = str(err)
+        status["apps"] = self.connected_apps() if status["available"] else []
         self._status_cache = (time.monotonic(), status)
         return status
+
+    def connected_apps(self):
+        """Stasis apps that are connected over ARI right now."""
+        ok, output = self.cli("ari show apps")
+        if not ok or "====" not in output:
+            return []
+        listing = output.split("====", 1)[1].lstrip("=").strip()
+        return [line.strip() for line in listing.splitlines() if line.strip()]
+
+    def overrides(self):
+        """Custom files that replace the add-on's own, and what they're missing."""
+        found = []
+        for name, needs in OVERRIDE_NEEDS.items():
+            path = os.path.join(self.settings.custom_dir, name)
+            try:
+                with open(path) as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            missing = [label for label, rx in needs if not re.search(rx, text, re.MULTILINE)]
+            found.append({"file": name, "missing": missing})
+        return found
 
     # -- Things the UI doesn't manage ---------------------------------------
 
@@ -194,6 +233,10 @@ class Backend:
             "kinds": model.KINDS,
             "long_number_digits": model.LONG_NUMBER_MIN_DIGITS,
             "server": {"address": self.server_address(), "sip_port": 5060, "tls_port": 5061},
+            "presets": model.PRESETS,
+            "ari_url": model.ARI_URL,
+            "overrides": self.overrides(),
+            "integrations_dir": self.store.integrations_dir,
         }
 
     def _save(self, config):
@@ -217,7 +260,9 @@ class Backend:
             taken = self.taken_numbers(config, exclude=number)
             if existing is None and not str(data.get("number") or "").strip():
                 data = dict(data, number=model.next_free_number(taken))
-            ext = model.validate_extension(data, existing, taken, config["outbound"])
+            ext = model.validate_extension(
+                data, existing, taken, config["outbound"], config["apps"]
+            )
             if existing is None:
                 config["extensions"].append(ext)
             else:
@@ -282,8 +327,46 @@ class Backend:
             all_numbers = {e["number"] for e in config["extensions"]}
             all_numbers |= {o["number"] for o in self.other_extensions(config, self.status())}
             config["outbound"] = model.validate_outbound(
-                data, {t["id"] for t in config["trunks"]}, all_numbers
+                data, {t["id"] for t in config["trunks"]}, all_numbers, config["apps"]
             )
+            return self._save(config)
+
+    def save_ari(self, data):
+        with self.store.lock:
+            config = self.store.load()
+            enabled = data.get("enabled")
+            if not isinstance(enabled, bool):
+                raise model.ValidationError("Invalid value.", "enabled")
+            config["ari"]["enabled"] = enabled
+            return self._save(config)
+
+    def save_app(self, app_id, data):
+        with self.store.lock:
+            config = self.store.load()
+            existing = None
+            if app_id is not None:
+                existing = next((a for a in config["apps"] if a["id"] == app_id), None)
+                if existing is None:
+                    raise NotFound("That app doesn't exist.")
+            others = [a for a in config["apps"] if a is not existing]
+            numbers = self.taken_numbers(config)
+            app = model.validate_app(data, existing, others, numbers, config["outbound"])
+            if existing is None:
+                config["apps"].append(app)
+                config["ari"]["enabled"] = True  # adding an app is asking for ARI
+            else:
+                config["apps"][config["apps"].index(existing)] = app
+            result = self._save(config)
+            result["app"] = app
+            return result
+
+    def delete_app(self, app_id):
+        with self.store.lock:
+            config = self.store.load()
+            before = len(config["apps"])
+            config["apps"] = [a for a in config["apps"] if a["id"] != app_id]
+            if len(config["apps"]) == before:
+                raise NotFound("That app doesn't exist.")
             return self._save(config)
 
     def ring(self, number):
@@ -328,6 +411,10 @@ ROUTES = [
     ("PUT", r"/api/trunks/([a-z0-9-]+)", lambda b, m, d: b.save_trunk(m[1], d)),
     ("DELETE", r"/api/trunks/([a-z0-9-]+)", lambda b, m, d: b.delete_trunk(m[1])),
     ("PUT", r"/api/outbound", lambda b, m, d: b.save_outbound(d)),
+    ("PUT", r"/api/ari", lambda b, m, d: b.save_ari(d)),
+    ("POST", r"/api/apps", lambda b, m, d: b.save_app(None, d)),
+    ("PUT", r"/api/apps/([a-z0-9-]+)", lambda b, m, d: b.save_app(m[1], d)),
+    ("DELETE", r"/api/apps/([a-z0-9-]+)", lambda b, m, d: b.delete_app(m[1])),
     ("POST", r"/api/command", lambda b, m, d: b.command(d)),
     ("POST", r"/api/reload", lambda b, m, d: {"ok": True, "problems": b.apply()}),
 ]

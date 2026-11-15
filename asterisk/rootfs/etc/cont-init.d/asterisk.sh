@@ -194,7 +194,7 @@ else
 fi
 
 bashio::log.info "Generating phones and outside lines from the web UI settings..."
-rm -f "${etc_asterisk}/pjsip_ui.conf" "${etc_asterisk}/extensions_ui.conf"
+rm -f "${etc_asterisk}/pjsip_ui.conf" "${etc_asterisk}/extensions_ui.conf" "${etc_asterisk}/ari_ui.conf"
 if ! python3 /usr/local/lib/pbx-ui/main.py --generate; then
     bashio::exit.nok "Failed to generate the web UI's Asterisk config"
 fi

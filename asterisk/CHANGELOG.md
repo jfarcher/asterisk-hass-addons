@@ -3,6 +3,19 @@
 
 # Changelog
 
+## 6.6.0
+
+### New Features
+
+- **Apps** tab in the web UI: turn ARI (the Asterisk REST Interface) on or off, add app logins, and send a range of numbers to an app (Stasis). Each app shows whether it's connected.
+- One-click setup for [Kiosk Intercom Gateway](https://github.com/jfarcher/kiosk-intercom-gateway): **Connect** adds its login and sends 800-899 to it. The gateway's **Set up Asterisk for me** (0.8.0 and later) then reads the login from `asterisk/integrations/kiosk-intercom-gateway.json` instead of editing Asterisk's files.
+- The web UI warns when a file in `asterisk/custom` replaces the add-on's `pjsip.conf`, `extensions.conf` or `ari.conf` without the lines it needs, and lists them.
+
+### Other Changes
+
+- `ari.conf` now includes `ari_ui.conf`, written by the web UI. ARI stays off until it's turned on.
+- `[default]` now includes a `ui-apps` context, before `ui-outbound`, for numbers sent to apps.
+
 ## 6.5.0
 
 ### New Features

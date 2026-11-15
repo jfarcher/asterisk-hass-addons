@@ -143,5 +143,71 @@ class Rendering(unittest.TestCase):
                 json.load(fh)
 
 
+class Apps(unittest.TestCase):
+    def kig(self, **extra):
+        return model.validate_app(dict({"preset": "kiosk-intercom-gateway"}, **extra))
+
+    def test_preset_fills_everything(self):
+        app = self.kig()
+        self.assertEqual(app["id"], "kiosk-intercom-gateway")
+        self.assertEqual(app["username"], "kiosk-gateway")
+        self.assertEqual(app["stasis_app"], "kiosk-intercom")
+        self.assertEqual(model.route_pattern(app["route"]), "_8XX")
+        self.assertFalse(app["read_only"])
+        self.assertTrue(model.PASSWORD_RE.match(app["password"]))
+
+    def test_route_clashes(self):
+        app = self.kig()
+        with self.assertRaises(ValidationError):
+            model.validate_extension({"number": "801", "name": "A"}, apps=[app])
+        model.validate_extension({"number": "8011", "name": "A"}, apps=[app])  # 4 digits is fine
+        with self.assertRaises(ValidationError):  # overlapping number ranges
+            model.validate_app({"preset": "kiosk-intercom-gateway", "username": "x"}, others=[app])
+        with self.assertRaises(ValidationError):  # phone 812 already exists
+            model.validate_app({"preset": "kiosk-intercom-gateway"}, numbers={"812"})
+        with self.assertRaises(ValidationError):  # parking
+            model.validate_app({"name": "P", "username": "p", "stasis_app": "p",
+                                "route": {"prefix": "7", "length": 3}})
+        with self.assertRaises(ValidationError):
+            model.validate_outbound({"mode": "prefix", "prefix": "8"}, set(), set(), [app])
+
+    def test_rejects_injection(self):
+        for field, value in [("username", "a\n[x]"), ("stasis_app", "a,b"), ("name", "x;y")]:
+            with self.assertRaises(ValidationError, msg=field):
+                self.kig(**{field: value})
+
+    def test_rendering_and_handoff(self):
+        config = model.default_config()
+        config["apps"] = [self.kig()]
+        ari = model.render_ari(config)
+        self.assertIn("enabled=no", ari)
+        self.assertIn("[kiosk-gateway]", ari)
+        self.assertNotIn("Stasis(", model.render_dialplan(config))  # ARI off
+        config["ari"]["enabled"] = True
+        self.assertIn("enabled=yes", model.render_ari(config))
+        plan = model.render_dialplan(config)
+        self.assertIn("exten => _8XX,1,NoOp(Kiosk Intercom Gateway)", plan)
+        self.assertIn(" same => n,Stasis(kiosk-intercom,${EXTEN})", plan)
+        handoff = model.render_handoff(config, config["apps"][0])
+        self.assertEqual(handoff["numbers"]["first"], "800")
+        self.assertEqual(handoff["ari_url"], "http://127.0.0.1:8088")
+        self.assertTrue(handoff["dialplan_managed"])
+
+    def test_store_writes_and_prunes_handoffs(self):
+        config = model.default_config()
+        config["ari"]["enabled"] = True
+        config["apps"] = [self.kig()]
+        with tempfile.TemporaryDirectory() as tmp:
+            store = model.Store(os.path.join(tmp, "asterisk", "ui", "pbx.json"), tmp)
+            store.save(config)
+            handoff = os.path.join(tmp, "asterisk", "integrations", "kiosk-intercom-gateway.json")
+            with open(handoff) as fh:
+                self.assertEqual(json.load(fh)["username"], "kiosk-gateway")
+            self.assertEqual(store.load(), config)
+            config["apps"] = []
+            store.save(config)
+            self.assertFalse(os.path.exists(handoff))
+
+
 if __name__ == "__main__":
     unittest.main()

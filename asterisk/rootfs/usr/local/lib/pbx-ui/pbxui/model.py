@@ -4,7 +4,11 @@ The UI stores everything in one small JSON file (``pbx.json``) and turns it
 into two Asterisk config files:
 
 * ``pjsip_ui.conf``      - phones (endpoints) and outside lines (trunks)
-* ``extensions_ui.conf`` - how calls to/from outside lines are routed
+* ``extensions_ui.conf`` - how calls to/from outside lines and apps are routed
+* ``ari_ui.conf``        - ARI on/off and the logins apps use to control calls
+
+For each app it also writes a small JSON "handoff" file that the app (for
+example Kiosk Intercom Gateway) can read to connect without copy and paste.
 
 Every value written to those files is validated against a strict allowlist
 first, so nothing typed into the UI can break out of an Asterisk config line.
@@ -45,6 +49,27 @@ CALLER_NUMBER_RE = re.compile(r"^\+?[0-9]{2,20}$")
 PREFIX_RE = re.compile(r"^[0-9]{1,2}$")
 RING_TARGET_RE = re.compile(r"^[0-9]{1,6}$")
 TRUNK_ID_RE = re.compile(r"^trunk-[a-z0-9-]{1,40}$")
+APP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+ARI_USER_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+STASIS_APP_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+ROUTE_PREFIX_RE = re.compile(r"^[0-9]{1,3}$")
+
+ARI_URL = "http://127.0.0.1:8088"
+HANDOFF_VERSION = 1
+
+# One-click setups for apps we know about. Values are what the app expects.
+PRESETS = {
+    "kiosk-intercom-gateway": {
+        "name": "Kiosk Intercom Gateway",
+        "username": "kiosk-gateway",
+        "stasis_app": "kiosk-intercom",
+        "route": {"prefix": "8", "length": 3},
+        "read_only": False,
+        "blurb": "Calls between Kiosk Satellite kiosks and your phones. "
+                 "Numbers 800-899 ring kiosks (800 announces to all of them).",
+        "url": "https://github.com/jfarcher/kiosk-intercom-gateway",
+    },
+}
 
 
 class ValidationError(Exception):
@@ -67,6 +92,8 @@ def default_config():
         "extensions": [],
         "trunks": [],
         "outbound": {"mode": "direct", "prefix": "9", "trunk": None},
+        "ari": {"enabled": False},
+        "apps": [],
     }
 
 
@@ -130,7 +157,7 @@ def parse_server(value):
 # ---------------------------------------------------------------------------
 
 
-def validate_extension(data, existing=None, taken=(), outbound=None):
+def validate_extension(data, existing=None, taken=(), outbound=None, apps=()):
     """Return a clean extension dict built from user input.
 
     ``existing`` is the stored extension when editing (keeps its password if
@@ -147,6 +174,12 @@ def validate_extension(data, existing=None, taken=(), outbound=None):
         )
     if number in taken:
         raise ValidationError(f"{number} is already in use.", "number")
+    for app in apps:
+        if route_matches(app.get("route"), number):
+            raise ValidationError(
+                f"{route_label(app['route'])} go to {app['name']}. Pick another number.",
+                "number",
+            )
     if outbound and outbound.get("mode") == "prefix":
         prefix = outbound.get("prefix") or ""
         if prefix and number.startswith(prefix):
@@ -272,7 +305,7 @@ def validate_trunk(data, existing=None, known_numbers=(), taken_ids=()):
     }
 
 
-def validate_outbound(data, trunk_ids, all_numbers):
+def validate_outbound(data, trunk_ids, all_numbers, apps=()):
     mode = _text(data, "mode", "direct")
     if mode not in OUTBOUND_MODES:
         raise ValidationError("Choose how outside numbers are dialled.", "mode")
@@ -287,12 +320,138 @@ def validate_outbound(data, trunk_ids, all_numbers):
                 f"{', '.join(clashes)}. Pick a different prefix.",
                 "prefix",
             )
+        for app in apps:
+            route = app.get("route")
+            if route and (route["prefix"].startswith(prefix) or prefix.startswith(route["prefix"])):
+                raise ValidationError(
+                    f"Prefix {prefix} clashes with {route_label(route)}, which go to "
+                    f"{app['name']}. Pick a different prefix.",
+                    "prefix",
+                )
     trunk = data.get("trunk") or None
     if trunk is not None and trunk not in trunk_ids:
         raise ValidationError("Choose an outside line.", "trunk")
     if not PREFIX_RE.match(prefix):
         prefix = "9"
     return {"mode": mode, "prefix": prefix, "trunk": trunk}
+
+
+def route_pattern(route):
+    """{"prefix": "8", "length": 3} -> "_8XX"."""
+    return "_" + route["prefix"] + "X" * (route["length"] - len(route["prefix"]))
+
+
+def route_matches(route, number):
+    return bool(route) and len(number) == route["length"] and number.startswith(route["prefix"])
+
+
+def route_label(route):
+    pad = route["length"] - len(route["prefix"])
+    return f"Numbers {route['prefix']}{'0' * pad} to {route['prefix']}{'9' * pad}"
+
+
+def routes_overlap(a, b):
+    return a["length"] == b["length"] and (
+        a["prefix"].startswith(b["prefix"]) or b["prefix"].startswith(a["prefix"])
+    )
+
+
+def clean_route(value):
+    if value in (None, "", False):
+        return None
+    if not isinstance(value, dict):
+        raise ValidationError("Invalid number range.", "route_prefix")
+    prefix = str(value.get("prefix", "")).strip()
+    try:
+        length = int(value.get("length"))
+    except (TypeError, ValueError):
+        raise ValidationError("Choose how many digits the numbers have.", "route_length") from None
+    if not ROUTE_PREFIX_RE.match(prefix):
+        raise ValidationError("Numbers should start with 1 to 3 digits.", "route_prefix")
+    if not 2 <= length <= 4:
+        raise ValidationError("Numbers should be 2 to 4 digits long.", "route_length")
+    if len(prefix) >= length:
+        raise ValidationError(
+            "The starting digits must be shorter than the whole number.", "route_prefix"
+        )
+    return {"prefix": prefix, "length": length}
+
+
+def validate_app(data, existing=None, others=(), numbers=(), outbound=None):
+    """Return a clean app (ARI login + optional number range) from input.
+
+    ``others`` are the other apps; ``numbers`` are phone numbers in use.
+    """
+    existing = existing or {}
+    preset = _text(data, "preset", existing.get("preset", "")) or None
+    if preset is not None and preset not in PRESETS:
+        raise ValidationError("Unknown app.", "preset")
+    defaults = dict(PRESETS.get(preset, {}), **existing)
+
+    name = clean_name(_text(data, "name", defaults.get("name", "")))
+
+    username = _text(data, "username", defaults.get("username", ""))
+    if not ARI_USER_RE.match(username) or username.lower() == "general":
+        raise ValidationError(
+            "Login name can only contain letters, numbers, - and _.", "username"
+        )
+    if any(o["username"] == username for o in others):
+        raise ValidationError(f"Another app already uses the login {username}.", "username")
+
+    password = _text(data, "password", "") or defaults.get("password", "")
+    password = clean_password(password or generate_password(24))
+
+    stasis_app = _text(data, "stasis_app", defaults.get("stasis_app", ""))
+    if not STASIS_APP_RE.match(stasis_app):
+        raise ValidationError(
+            "App name can only contain letters, numbers, - and _.", "stasis_app"
+        )
+
+    route = clean_route(data.get("route", defaults.get("route")))
+    if route:
+        for other in others:
+            if other.get("route") and routes_overlap(route, other["route"]):
+                raise ValidationError(
+                    f"{route_label(route)} overlap with {other['name']}'s numbers.",
+                    "route_prefix",
+                )
+        clashes = sorted(n for n in set(numbers) | RESERVED_NUMBERS if route_matches(route, n))
+        if clashes:
+            raise ValidationError(
+                f"{route_label(route)} include {', '.join(clashes)}, which "
+                "already ring something else.",
+                "route_prefix",
+            )
+        if outbound and outbound.get("mode") == "prefix":
+            prefix = outbound.get("prefix") or ""
+            if route["prefix"].startswith(prefix) or prefix.startswith(route["prefix"]):
+                raise ValidationError(
+                    f"Numbers starting with {prefix} are used to dial outside lines.",
+                    "route_prefix",
+                )
+
+    read_only = _bool(data, "read_only", defaults.get("read_only", False))
+
+    app_id = existing.get("id") or _unique_id(preset or name, {o["id"] for o in others})
+    return {
+        "id": app_id,
+        "preset": preset,
+        "name": name,
+        "username": username,
+        "password": password,
+        "stasis_app": stasis_app,
+        "route": route,
+        "read_only": read_only,
+    }
+
+
+def _unique_id(name, taken):
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:32] or "app"
+    candidate, n = base, 2
+    while candidate in taken:
+        candidate = f"{base}-{n}"
+        n += 1
+    return candidate
 
 
 def normalize(config):
@@ -314,6 +473,13 @@ def normalize(config):
         ids.add(trunk_id)
         clean["trunks"].append(trunk)
     clean["outbound"] = validate_outbound(config.get("outbound", {}), ids, set())
+    ari = config.get("ari") or {}
+    clean["ari"] = {"enabled": _bool(ari, "enabled", False)}
+    for app in config.get("apps", []):
+        app_id = str(app.get("id") or "")
+        if not APP_ID_RE.match(app_id):
+            raise ValidationError(f"Invalid app id {app_id!r}.")
+        clean["apps"].append(validate_app(app, {"id": app_id}, others=clean["apps"]))
     return clean
 
 
@@ -459,8 +625,74 @@ def render_pjsip(config):
     return "\n".join(parts)
 
 
+def render_ari(config):
+    enabled = "yes" if config["ari"]["enabled"] else "no"
+    parts = [
+        HEADER.format(custom="ari.conf"),
+        _section("general", ("enabled", enabled), ("pretty", "no")),
+    ]
+    for app in config["apps"]:
+        parts.append(f"; ---- {app['name']}")
+        parts.append(
+            _section(
+                app["username"],
+                ("type", "user"),
+                ("read_only", "yes" if app["read_only"] else "no"),
+                ("password", app["password"]),
+                ("password_format", "plain"),
+            )
+        )
+    return "\n".join(parts)
+
+
+def _app_dialplan(config):
+    out = ["[ui-apps]"]
+    routed = [a for a in config["apps"] if a["route"]]
+    if not routed:
+        out.append("; No numbers are sent to apps.")
+    elif not config["ari"]["enabled"]:
+        out.append("; ARI is turned off, so numbers aren't sent to apps.")
+    else:
+        for app in routed:
+            out.append(f"; {route_label(app['route'])} go to {app['name']}")
+            out.append(f"exten => {route_pattern(app['route'])},1,NoOp({app['name']})")
+            out.append(f" same => n,Stasis({app['stasis_app']},${{EXTEN}})")
+            out.append(" same => n,Hangup()")
+    out.append("")
+    return out
+
+
+def render_handoff(config, app):
+    """What an app needs to connect, for it to read from the shared config folder."""
+    route = app["route"]
+    numbers = None
+    if route:
+        pad = route["length"] - len(route["prefix"])
+        numbers = {
+            "pattern": route_pattern(route),
+            "prefix": route["prefix"],
+            "length": route["length"],
+            "first": route["prefix"] + "0" * pad,
+            "last": route["prefix"] + "9" * pad,
+        }
+    return {
+        "version": HANDOFF_VERSION,
+        "managed_by": "asterisk-addon-web-ui",
+        "ari_enabled": config["ari"]["enabled"],
+        "ari_url": ARI_URL,
+        "username": app["username"],
+        "password": app["password"],
+        "app": app["stasis_app"],
+        "numbers": numbers,
+        # The add-on routes the numbers itself: apps must not edit
+        # extensions.conf or ari.conf.
+        "dialplan_managed": True,
+    }
+
+
 def render_dialplan(config):
     out = [HEADER.format(custom="extensions.conf")]
+    out += _app_dialplan(config)
     trunks = {t["id"]: t for t in config["trunks"]}
     outbound = config["outbound"]
     out_trunk = trunks.get(outbound.get("trunk"))
@@ -538,9 +770,13 @@ def _atomic_write(path, content, mode=0o600):
 class Store:
     """Loads/saves pbx.json and writes the generated Asterisk files."""
 
-    def __init__(self, config_path, output_dir):
+    def __init__(self, config_path, output_dir, integrations_dir=None):
         self.config_path = config_path
         self.output_dir = output_dir
+        # /config/asterisk/integrations next to /config/asterisk/ui/pbx.json
+        self.integrations_dir = integrations_dir or os.path.join(
+            os.path.dirname(os.path.dirname(config_path)), "integrations"
+        )
         self.lock = threading.RLock()
 
     def load(self):
@@ -564,3 +800,20 @@ class Store:
             render_dialplan(config),
             0o640,
         )
+        _atomic_write(os.path.join(self.output_dir, "ari_ui.conf"), render_ari(config), 0o640)
+        self.write_handoffs(config)
+
+    def write_handoffs(self, config):
+        """One JSON file per app; files for removed apps are deleted."""
+        wanted = {app["id"] for app in config["apps"]}
+        if not wanted and not os.path.isdir(self.integrations_dir):
+            return
+        for app in config["apps"]:
+            _atomic_write(
+                os.path.join(self.integrations_dir, f"{app['id']}.json"),
+                json.dumps(render_handoff(config, app), indent=2) + "\n",
+                0o600,
+            )
+        for name in os.listdir(self.integrations_dir):
+            if name.endswith(".json") and name[:-5] not in wanted:
+                os.unlink(os.path.join(self.integrations_dir, name))
