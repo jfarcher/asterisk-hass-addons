@@ -33,6 +33,14 @@ KINDS = {
 }
 TRANSPORTS = ("udp", "tcp", "tls")
 OUTBOUND_MODES = ("direct", "prefix")
+GROUP_STRATEGIES = {
+    "all": "Everyone at once",
+    "order": "One after another, in order",
+    "round_robin": "Take turns (round robin)",
+    "random": "One after another, starting at random",
+}
+FIRST_GROUP_NUMBER = 600
+MAX_GROUP_MEMBERS = 20
 
 # Internal numbers are 2-4 digits, so in "direct" mode anything with 5+ digits
 # (or starting with +) is unambiguously an outside number.
@@ -103,6 +111,7 @@ def default_config():
         "apps": [],
         "provisioning": {"enabled": False, "token": "", "public_url": ""},
         "network": {"sip_address": ""},
+        "groups": [],
     }
 
 
@@ -563,6 +572,14 @@ def normalize(config):
         "public_url": clean_public_url(prov.get("public_url")),
     }
     clean["network"] = validate_network(config.get("network") or {})
+    for group in config.get("groups", []):
+        group_id = str(group.get("id") or "")
+        if not APP_ID_RE.match(group_id):
+            raise ValidationError(f"Invalid group id {group_id!r}.")
+        clean["groups"].append(
+            validate_group(group, {"id": group_id}, others=clean["groups"], taken=seen,
+                           require_members=False)
+        )
     for app in config.get("apps", []):
         app_id = str(app.get("id") or "")
         if not APP_ID_RE.match(app_id):
@@ -584,6 +601,83 @@ def clean_public_url(value):
             "public_url",
         )
     return url
+
+
+def validate_group(data, existing=None, others=(), taken=(), apps=(), outbound=None,
+                   require_members=True):
+    """A ring group: a number that rings several phones (or app numbers) in turn or together.
+
+    ``taken`` are numbers used by phones; ``others`` are the other groups.
+    """
+    existing = existing or {}
+    name = clean_name(_text(data, "name", existing.get("name", "")))
+
+    number = _text(data, "number", existing.get("number", ""))
+    group_numbers = {g["number"] for g in others}
+    if not EXTENSION_RE.match(number):
+        raise ValidationError("Number must be 2 to 4 digits.", "number")
+    if number in RESERVED_NUMBERS:
+        raise ValidationError(f"{number} is reserved for call parking.", "number")
+    if number in taken or number in group_numbers:
+        raise ValidationError(f"{number} is already in use.", "number")
+    for app in apps:
+        if route_matches(app.get("route"), number):
+            raise ValidationError(f"{route_label(app['route'])} go to {app['name']}.", "number")
+    prefix = outbound.get("prefix") if outbound and outbound.get("mode") == "prefix" else ""
+    if prefix and number.startswith(prefix):
+        raise ValidationError(f"Numbers starting with {prefix} dial outside lines.", "number")
+
+    members = data.get("members", existing.get("members", []))
+    if isinstance(members, str):
+        members = re.split(r"[\s,;]+", members)
+    if not isinstance(members, list):
+        raise ValidationError("Invalid list of members.", "members")
+    clean = []
+    for member in members:
+        member = str(member).strip()
+        if not member:
+            continue
+        if not EXTENSION_RE.match(member):
+            raise ValidationError(f"{member} isn't an internal number (2 to 4 digits).", "members")
+        if member in RESERVED_NUMBERS:
+            raise ValidationError(f"{member} is for call parking.", "members")
+        if member == number or member in group_numbers:
+            raise ValidationError("A group can't ring another group.", "members")
+        if prefix and member.startswith(prefix):
+            raise ValidationError(f"{member} starts with {prefix}, which dials outside lines.", "members")
+        if member not in clean:
+            clean.append(member)
+    if not clean and require_members:
+        raise ValidationError("Choose at least one phone or number to ring.", "members")
+    if len(clean) > MAX_GROUP_MEMBERS:
+        raise ValidationError(f"A group can ring at most {MAX_GROUP_MEMBERS} numbers.", "members")
+
+    strategy = _text(data, "strategy", existing.get("strategy", "all"))
+    if strategy not in GROUP_STRATEGIES:
+        raise ValidationError("Choose how the group rings.", "strategy")
+    try:
+        ring_time = int(data.get("ring_time", existing.get("ring_time", 30 if strategy == "all" else 15)))
+    except (TypeError, ValueError):
+        raise ValidationError("Ring time must be a number of seconds.", "ring_time") from None
+    if not 5 <= ring_time <= 300:
+        raise ValidationError("Ring time must be between 5 and 300 seconds.", "ring_time")
+
+    group_id = existing.get("id") or _unique_id(name, {g["id"] for g in others})
+    return {
+        "id": group_id,
+        "name": name,
+        "number": number,
+        "members": clean,
+        "strategy": strategy,
+        "ring_time": ring_time,
+    }
+
+
+def next_group_number(taken):
+    n = FIRST_GROUP_NUMBER
+    while str(n) in taken or str(n) in RESERVED_NUMBERS:
+        n += 1
+    return str(n)
 
 
 def validate_network(data):
@@ -805,8 +899,47 @@ def render_handoff(config, app):
     }
 
 
+def _group_dialplan(config):
+    out = ["[ui-groups]"]
+    if not config["groups"]:
+        out.append("; No ring groups.")
+    for group in config["groups"]:
+        n, members, secs = group["number"], group["members"], group["ring_time"]
+        dial = [f"Local/{m}@default" for m in members]
+        out.append(f"; {group['name']}: {GROUP_STRATEGIES[group['strategy']]}")
+        out.append(f"exten => {n},1,NoOp(Ring group {group['name']})")
+        if not dial:
+            pass  # every member was removed: callers hear "nobody is available"
+        elif group["strategy"] == "all":
+            out.append(f" same => n,Dial({'&'.join(dial)},{secs})")
+            out.append(' same => n,ExecIf($["${DIALSTATUS}" = "ANSWER"]?Hangup())')
+        else:
+            count = len(dial)
+            if group["strategy"] == "round_robin":
+                # Whose turn it is lives in AstDB, so it survives restarts.
+                out.append(f" same => n,Set(TURN=${{DB(ui-groups/{n})}})")
+                out.append(f" same => n,Set(TURN=$[(${{IF($[${{LEN(${{TURN}})}}]?${{TURN}}:-1)}} + 1) % {count}])")
+                out.append(f" same => n,Set(DB(ui-groups/{n})=${{TURN}})")
+            else:
+                out.append(f" same => n,Set(TURN={0 if group['strategy'] == 'order' else f'${{RAND(0,{count - 1})}}'})")
+            out.append(" same => n,Goto(start${TURN})")
+            for start in range(count):
+                for i in range(count):
+                    label = f"(start{start})" if i == 0 else ""
+                    out.append(f" same => n{label},Dial({dial[(start + i) % count]},{secs})")
+                    # An answered call that has ended mustn't ring the next member.
+                    out.append(' same => n,ExecIf($["${DIALSTATUS}" = "ANSWER"]?Hangup())')
+                out.append(" same => n,Goto(nobody)")
+        out.append(" same => n(nobody),Answer()")
+        out.append(" same => n,Playback(vm-nobodyavail)")
+        out.append(" same => n,Hangup()")
+    out.append("")
+    return out
+
+
 def render_dialplan(config):
     out = [HEADER.format(custom="extensions.conf")]
+    out += _group_dialplan(config)
     out += _app_dialplan(config)
     trunks = {t["id"]: t for t in config["trunks"]}
     outbound = config["outbound"]

@@ -303,5 +303,60 @@ class RingOther(unittest.TestCase):
         self.assertIn("Dial(Local/200@local-extensions&Local/801@default,45)", plan)
 
 
+class Groups(unittest.TestCase):
+    def group(self, **extra):
+        return model.validate_group(dict({"name": "Downstairs", "number": "600",
+                                          "members": ["201", "202", "801"]}, **extra))
+
+    def test_validation(self):
+        g = self.group(members="201, 202 201")
+        self.assertEqual(g["members"], ["201", "202"])
+        self.assertEqual((g["strategy"], g["ring_time"]), ("all", 30))
+        self.assertEqual(self.group(strategy="order")["ring_time"], 15)
+        bad = [
+            {"number": "444"}, {"number": "12345"}, {"members": []}, {"members": ["600"]},
+            {"members": ["07700900123"]}, {"strategy": "loud"}, {"ring_time": 2},
+        ]
+        for extra in bad:
+            with self.assertRaises(ValidationError, msg=extra):
+                self.group(**extra)
+        with self.assertRaises(ValidationError):  # number taken by a phone
+            model.validate_group({"name": "G", "number": "201", "members": ["202"]}, taken={"201"})
+        kig = model.validate_app({"preset": "kiosk-intercom-gateway"})
+        with self.assertRaises(ValidationError):  # inside the kiosk range
+            model.validate_group({"name": "G", "number": "810", "members": ["202"]}, apps=[kig])
+        with self.assertRaises(ValidationError):  # a group can't ring another group
+            model.validate_group({"name": "G", "number": "601", "members": ["600"]}, others=[self.group()])
+
+    def plan(self, **extra):
+        config = model.default_config()
+        config["groups"] = [self.group(**extra)]
+        return model.render_dialplan(config)
+
+    def test_ring_all(self):
+        plan = self.plan()
+        self.assertIn("exten => 600,1,NoOp(Ring group Downstairs)", plan)
+        self.assertIn("Dial(Local/201@default&Local/202@default&Local/801@default,30)", plan)
+        self.assertIn('ExecIf($["${DIALSTATUS}" = "ANSWER"]?Hangup())', plan)
+        self.assertIn("(nobody),Answer()", plan)
+
+    def test_sequential_strategies(self):
+        order = self.plan(strategy="order")
+        self.assertIn("Set(TURN=0)", order)
+        self.assertIn("n(start2),Dial(Local/801@default,15)", order)
+        self.assertEqual(order.count("Dial("), 9)  # 3 starting points x 3 members
+        self.assertIn("Set(TURN=${RAND(0,2)})", self.plan(strategy="random"))
+        rr = self.plan(strategy="round_robin")
+        self.assertIn("Set(TURN=${DB(ui-groups/600)})", rr)
+        self.assertIn("Set(DB(ui-groups/600)=${TURN})", rr)
+
+    def test_round_trip_and_empty_group(self):
+        config = model.default_config()
+        config["groups"] = [self.group()]
+        config["groups"][0]["members"] = []  # last phone was removed
+        self.assertEqual(model.normalize(config)["groups"][0]["members"], [])
+        self.assertIn("exten => 600,1,NoOp", model.render_dialplan(config))
+
+
 if __name__ == "__main__":
     unittest.main()

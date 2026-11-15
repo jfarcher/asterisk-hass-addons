@@ -228,12 +228,14 @@
 
   <nav class="tabs" role="tablist">
     <button role="tab" data-tab="phones" aria-selected="true">Phones</button>
+    <button role="tab" data-tab="groups" aria-selected="false">Groups</button>
     <button role="tab" data-tab="lines" aria-selected="false">Outside lines</button>
     <button role="tab" data-tab="apps" aria-selected="false">Apps</button>
     <button role="tab" data-tab="advanced" aria-selected="false">Advanced</button>
   </nav>
 
   <section id="tab-phones"></section>
+  <section id="tab-groups" hidden></section>
   <section id="tab-lines" hidden></section>
   <section id="tab-apps" hidden></section>
   <section id="tab-advanced" hidden></section>
@@ -260,6 +262,7 @@ const ICONS = {
   eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
   refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/>',
   app: '<path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/>',
+  group: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.2A5 5 0 0 1 21.5 19"/>',
 };
 
 function icon(name) {
@@ -426,6 +429,7 @@ function render() {
   const linesTab = document.getElementById("tab-lines");
   if (!linesTab.contains(document.activeElement) || document.activeElement.tagName === "BUTTON") renderLines();
   renderOverrides();
+  renderGroups();
   renderApps();
   renderAdvanced();
 }
@@ -748,7 +752,8 @@ function renderLines() {
 
   const cards = trunks.map((t) => {
     const st = lineStatus(t);
-    const rung = [...t.ring.map(phoneLabel), ...(t.ring_other || [])];
+    const groupName = (n) => { const g = data.config.groups.find((x) => x.number === n); return g ? `${g.name} (${n})` : memberLabel(n); };
+    const rung = [...t.ring.map(phoneLabel), ...(t.ring_other || []).map(groupName)];
     const ring = rung.length ? rung.join(", ") : "nobody – callers hear “nobody is available”";
     return h("div", { class: "card row" },
       h("span", { class: "icon-bubble" }, icon("line")),
@@ -820,6 +825,135 @@ function outboundCard() {
       }, "Save"),
     ),
   );
+}
+
+function memberLabel(number) {
+  const p = allPhones().find((x) => x.number === number);
+  if (p) return p.name ? `${p.name} (${number})` : number;
+  const app = data.config.apps.find((a) => a.route && number.length === a.route.length && number.startsWith(a.route.prefix));
+  return app ? `${number} (${app.name})` : number;
+}
+
+function renderGroups() {
+  const root = document.getElementById("tab-groups");
+  const groups = data.config.groups;
+  const head = h("div", { class: "section-head" },
+    h("div", {},
+      h("h2", {}, "Groups"),
+      h("p", { class: "muted small" }, "A group has its own number that rings several phones, either all at once or one after another. Outside lines can ring a group too."),
+    ),
+    groups.length ? h("button", { class: "primary", onclick: () => groupDialog() }, "Add a group") : null,
+  );
+  if (!groups.length) {
+    root.replaceChildren(head, h("div", { class: "card empty" },
+      h("span", { class: "icon-bubble", style: "margin:0 auto 10px" }, icon("group")),
+      h("h3", {}, "No groups yet"),
+      h("p", { class: "muted small" }, "For example “Downstairs” on 600, ringing the kitchen and lounge phones and the hall kiosk."),
+      h("button", { class: "primary", onclick: () => groupDialog() }, "Add a group"),
+    ));
+    return;
+  }
+  root.replaceChildren(head, h("div", { class: "list" }, groups.map((g) => h("div", { class: "card row" },
+    h("span", { class: "icon-bubble" }, icon("group")),
+    h("div", { class: "info" },
+      h("div", { class: "name" }, g.name),
+      h("div", { class: "muted small" }, h("span", { class: "number" }, `Number ${g.number}`), " · ", data.strategies[g.strategy]),
+      h("div", { class: "small", style: "margin-top:4px" }, h("span", { class: "muted" }, "Rings: "),
+        g.members.length ? g.members.map(memberLabel).join(", ") : "nobody (add some phones)"),
+    ),
+    h("div", { class: "actions" },
+      h("button", { onclick: () => testRing(g.number) }, "Test ring"),
+      h("button", { onclick: () => groupDialog(g) }, "Edit"),
+    ),
+  ))));
+}
+
+const STRATEGY_HINTS = {
+  all: "All of them ring together. The first to answer gets the call.",
+  order: "The first one rings, then the next, in the order listed.",
+  round_robin: "Like one after another, but each call starts with the next person, so calls are shared out.",
+  random: "One after another, starting with a random member each time.",
+};
+
+function groupDialog(group) {
+  const g = group || {};
+  const phones = allPhones();
+  const phoneNumbers = new Set(phones.map((p) => p.number));
+  const chosen = new Set(g.members || []);
+  const extra = (g.members || []).filter((m) => !phoneNumbers.has(m));
+  const strategy = g.strategy || "all";
+  const ringTime = h("input", { type: "number", name: "ring_time", min: "5", max: "300", value: String(g.ring_time || (strategy === "all" ? 30 : 15)), style: "width:7em" });
+  const ringLabel = h("label", { for: "groupRing" }, strategy === "all" ? "Ring for (seconds)" : "Ring each for (seconds)");
+  ringTime.id = "groupRing";
+
+  openDialog({
+    title: group ? `Edit ${g.name}` : "Add a group",
+    body: [
+      h("div", { class: "grid2" },
+        field("Name", h("input", { type: "text", name: "name", value: g.name || "", placeholder: "e.g. Downstairs", maxlength: "60" })),
+        field("Number", h("input", { type: "text", name: "number", class: "mono", inputmode: "numeric", maxlength: "4", value: g.number || data.next_group_number }),
+          "Dial this to ring the group."),
+      ),
+      h("div", { class: "field" },
+        h("span", { class: "label" }, "Who it rings"),
+        phones.length
+          ? h("div", { class: "checks" }, phones.map((p) => h("label", { class: "check" },
+              h("input", { type: "checkbox", name: "member", value: p.number, checked: chosen.has(p.number) }),
+              h("span", {}, p.name || "Phone", " ", h("span", { class: "muted" }, `(${p.number})`)))))
+          : h("p", { class: "hint" }, "You haven't added any phones yet."),
+      ),
+      field("Also ring other numbers",
+        h("input", { type: "text", name: "extra", class: "mono", value: extra.join(", "), placeholder: otherNumbersExample(), autocomplete: "off" }),
+        otherNumbersHint()),
+      h("div", { class: "field" },
+        h("span", { class: "label" }, "How it rings"),
+        Object.entries(data.strategies).map(([key, label]) => h("label", { class: "radio-card" },
+          h("input", { type: "radio", name: "strategy", value: key, checked: key === strategy, onchange: () => {
+            ringLabel.textContent = key === "all" ? "Ring for (seconds)" : "Ring each for (seconds)";
+          } }),
+          h("div", {}, h("strong", {}, label), h("div", { class: "muted small" }, STRATEGY_HINTS[key])),
+        )),
+      ),
+      h("div", { class: "field" }, ringLabel, ringTime,
+        h("span", { class: "hint" }, "If nobody answers, callers hear “nobody is available”. For one after another, members ring in the order listed above, then any other numbers.")),
+    ],
+    footer: [
+      group ? h("button", { type: "button", class: "danger", onclick: () => confirmRemoveGroup(g) }, "Remove") : null,
+      h("span", { class: "spacer" }),
+      cancelButton(),
+      h("button", { type: "submit", class: "primary" }, group ? "Save" : "Add"),
+    ],
+    onsubmit: async (fd) => {
+      const members = [...fd.getAll("member"), ...(fd.get("extra") || "").split(/[\s,;]+/).filter(Boolean)];
+      const payload = {
+        name: fd.get("name"), number: fd.get("number"), members,
+        strategy: fd.get("strategy"), ring_time: Number(fd.get("ring_time")),
+      };
+      const res = group
+        ? await api("PUT", `api/groups/${encodeURIComponent(g.id)}`, payload)
+        : await api("POST", "api/groups", payload);
+      dlg.close();
+      toast(res.warning || (group ? "Saved" : `${res.group.name} added. Dial ${res.group.number} to ring it.`), res.warning ? "warn" : "");
+      await refresh();
+    },
+  });
+}
+
+function confirmRemoveGroup(g) {
+  openDialog({
+    title: `Remove ${g.name}?`,
+    body: h("p", {}, `Number ${g.number} will stop working. The phones in it aren't changed.`),
+    footer: [
+      h("button", { type: "button", onclick: () => groupDialog(g) }, "Keep it"),
+      h("button", { type: "submit", class: "primary", style: "background:var(--bad);border-color:var(--bad)" }, "Remove"),
+    ],
+    onsubmit: async () => {
+      const res = await api("DELETE", `api/groups/${encodeURIComponent(g.id)}`);
+      dlg.close();
+      toast(res.warning || `${g.name} removed`, res.warning ? "warn" : "");
+      await refresh();
+    },
+  });
 }
 
 function appStatus(app) {
@@ -1395,8 +1529,14 @@ function lineDialog(trunk) {
               h("span", {}, p.name || "Phone", " ", h("span", { class: "muted" }, `(${p.number})`)))))
           : h("p", { class: "hint" }, "You haven't added any phones yet. Callers will hear “nobody is available” until you do."),
       ),
+      data.config.groups.length ? h("div", { class: "field" },
+        h("span", { class: "label" }, "Or ring a group"),
+        h("div", { class: "checks" }, data.config.groups.map((g) => h("label", { class: "check" },
+          h("input", { type: "checkbox", name: "ring_group", value: g.number, checked: (t.ring_other || []).includes(g.number) }),
+          h("span", {}, g.name, " ", h("span", { class: "muted" }, `(${g.number})`))))),
+      ) : null,
       field("Also ring other numbers",
-        h("input", { type: "text", name: "ring_other", class: "mono", value: (t.ring_other || []).join(", "), placeholder: otherNumbersExample(), autocomplete: "off" }),
+        h("input", { type: "text", name: "ring_other", class: "mono", value: (t.ring_other || []).filter((n) => !data.config.groups.some((g) => g.number === n)).join(", "), placeholder: otherNumbersExample(), autocomplete: "off" }),
         otherNumbersHint()),
       h("details", { class: "more" },
         h("summary", {}, "More options"),
@@ -1432,7 +1572,7 @@ function lineDialog(trunk) {
         transport: fd.get("transport"),
         register: fd.get("register") === "on",
         ring: fd.getAll("ring"),
-        ring_other: (fd.get("ring_other") || "").split(/[\s,;]+/).filter(Boolean),
+        ring_other: [...fd.getAll("ring_group"), ...(fd.get("ring_other") || "").split(/[\s,;]+/).filter(Boolean)],
       };
       const res = trunk
         ? await api("PUT", `api/trunks/${encodeURIComponent(t.id)}`, payload)
@@ -1495,7 +1635,7 @@ async function testRing(number) {
 
 function showTab(name) {
   document.querySelectorAll("nav.tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
-  for (const tab of ["phones", "lines", "apps", "advanced"]) document.getElementById(`tab-${tab}`).hidden = tab !== name;
+  for (const tab of ["phones", "groups", "lines", "apps", "advanced"]) document.getElementById(`tab-${tab}`).hidden = tab !== name;
   try { sessionStorage.setItem("pbx-tab", name); } catch (_) { /* storage blocked */ }
 }
 

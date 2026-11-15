@@ -40,6 +40,7 @@ PERSON_RE = re.compile(r'^callerid="(.*)" <(\d+)>\s*$', re.MULTILINE)
 OVERRIDE_NEEDS = {
     "pjsip.conf": [("#include pjsip_ui.conf", r"#include\s+\"?pjsip_ui\.conf")],
     "extensions.conf": [
+        ("include => ui-groups  (in [default])", r"include\s*=>\s*ui-groups"),
         ("include => ui-apps  (in [default])", r"include\s*=>\s*ui-apps"),
         ("include => ui-outbound  (in [default])", r"include\s*=>\s*ui-outbound"),
         ("include => local-extensions  (in [default], after the two above)",
@@ -192,6 +193,7 @@ class Backend:
         status = self.status()
         taken = {e["number"] for e in config["extensions"]}
         taken |= {o["number"] for o in self.other_extensions(config, status)}
+        taken |= {g["number"] for g in config["groups"]}
         taken.discard(exclude)
         return taken
 
@@ -255,7 +257,10 @@ class Backend:
         status = self.status()
         others = self.other_extensions(config, status)
         taken = {e["number"] for e in config["extensions"]} | {o["number"] for o in others}
+        taken |= {g["number"] for g in config["groups"]}
         return {
+            "next_group_number": model.next_group_number(taken),
+            "strategies": model.GROUP_STRATEGIES,
             "config": config,
             "config_error": config_error,
             "status": status,
@@ -327,6 +332,8 @@ class Backend:
                 if ext["number"] != number:
                     for trunk in config["trunks"]:
                         trunk["ring"] = [ext["number"] if r == number else r for r in trunk["ring"]]
+                    for group in config["groups"]:
+                        group["members"] = [ext["number"] if m == number else m for m in group["members"]]
             config["extensions"].sort(key=lambda e: (len(e["number"]), e["number"]))
             result = self._save(config)
             result["extension"] = ext
@@ -341,6 +348,8 @@ class Backend:
                 raise NotFound(f"No phone with number {number}.")
             for trunk in config["trunks"]:
                 trunk["ring"] = [r for r in trunk["ring"] if r != number]
+            for group in config["groups"]:
+                group["members"] = [m for m in group["members"] if m != number]
             return self._save(config)
 
     def save_trunk(self, trunk_id, data):
@@ -383,6 +392,8 @@ class Backend:
             config = self.store.load()
             all_numbers = {e["number"] for e in config["extensions"]}
             all_numbers |= {o["number"] for o in self.other_extensions(config, self.status())}
+            all_numbers |= {g["number"] for g in config["groups"]}
+            all_numbers |= {m for g in config["groups"] for m in g["members"]}
             others = {n for t in config["trunks"] for n in t["ring_other"]}
             config["outbound"] = model.validate_outbound(
                 data, {t["id"] for t in config["trunks"]}, all_numbers, config["apps"], others
@@ -484,6 +495,48 @@ class Backend:
         content_type, body = provision.render(kind, ext, host, mac=mac)
         return 200, content_type, body
 
+    def save_group(self, group_id, data):
+        with self.store.lock:
+            config = self.store.load()
+            existing = None
+            if group_id is not None:
+                existing = next((g for g in config["groups"] if g["id"] == group_id), None)
+                if existing is None:
+                    raise NotFound("That group doesn't exist.")
+            others = [g for g in config["groups"] if g is not existing]
+            taken = self.taken_numbers(config) - {g["number"] for g in config["groups"]}
+            if existing is None and not str(data.get("number") or "").strip():
+                data = dict(data, number=model.next_group_number(
+                    taken | {g["number"] for g in others}))
+            group = model.validate_group(
+                data, existing, others, taken, config["apps"], config["outbound"]
+            )
+            if existing is None:
+                config["groups"].append(group)
+            else:
+                config["groups"][config["groups"].index(existing)] = group
+                if group["number"] != existing["number"]:
+                    for trunk in config["trunks"]:
+                        trunk["ring_other"] = [
+                            group["number"] if r == existing["number"] else r
+                            for r in trunk["ring_other"]
+                        ]
+            config["groups"].sort(key=lambda g: (len(g["number"]), g["number"]))
+            result = self._save(config)
+            result["group"] = group
+            return result
+
+    def delete_group(self, group_id):
+        with self.store.lock:
+            config = self.store.load()
+            group = next((g for g in config["groups"] if g["id"] == group_id), None)
+            if group is None:
+                raise NotFound("That group doesn't exist.")
+            config["groups"].remove(group)
+            for trunk in config["trunks"]:
+                trunk["ring_other"] = [r for r in trunk["ring_other"] if r != group["number"]]
+            return self._save(config)
+
     def save_ari(self, data):
         with self.store.lock:
             config = self.store.load()
@@ -525,11 +578,14 @@ class Backend:
     def ring(self, number):
         if not re.match(r"^[0-9]{1,6}$", number):
             raise model.ValidationError("Invalid number.")
+        # A group's own logic lives in [default]; phones are rung directly.
+        groups = {g["number"] for g in self.store.load()["groups"]}
+        context = "default" if number in groups else "local-extensions"
         try:
             with self.ami() as ami:
                 resp, _ = ami.action(
                     "Originate",
-                    Channel=f"Local/{number}@local-extensions",
+                    Channel=f"Local/{number}@{context}",
                     Application="Playback",
                     Data="hello-world",
                     CallerID='"Test call" <0>',
@@ -565,6 +621,9 @@ ROUTES = [
     ("DELETE", r"/api/trunks/([a-z0-9-]+)", lambda b, m, d: b.delete_trunk(m[1])),
     ("PUT", r"/api/outbound", lambda b, m, d: b.save_outbound(d)),
     ("PUT", r"/api/ari", lambda b, m, d: b.save_ari(d)),
+    ("POST", r"/api/groups", lambda b, m, d: b.save_group(None, d)),
+    ("PUT", r"/api/groups/([a-z0-9-]+)", lambda b, m, d: b.save_group(m[1], d)),
+    ("DELETE", r"/api/groups/([a-z0-9-]+)", lambda b, m, d: b.delete_group(m[1])),
     ("PUT", r"/api/provisioning", lambda b, m, d: b.save_provisioning(d)),
     ("PUT", r"/api/network", lambda b, m, d: b.save_network(d)),
     ("DELETE", r"/api/provisioning/waiting/([0-9a-f]{12})", lambda b, m, d: b.dismiss_waiting(m[1])),

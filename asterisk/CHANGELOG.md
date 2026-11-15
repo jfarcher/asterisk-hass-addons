@@ -3,6 +3,18 @@
 
 # Changelog
 
+## 6.10.0
+
+### New Features
+
+- **Groups** tab: give a group its own number (from 600) that rings several phones and app numbers, such as a kiosk's 801. Choose how it rings: everyone at once, one after another in order, taking turns (round robin) or starting at random. If nobody answers, callers hear "nobody is available".
+- Outside lines can ring a group.
+- Renumbering or removing a phone updates the groups it's in.
+
+### Other Changes
+
+- `[default]` now includes a `ui-groups` context, before `ui-apps`, for ring groups.
+
 ## 6.9.1
 
 ### Other Changes
