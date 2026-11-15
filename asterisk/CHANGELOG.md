@@ -20,6 +20,7 @@
 
 ### Other Changes
 
+- First release from the [jfarcher fork](https://github.com/jfarcher/asterisk-hass-addons). Images are now published to `ghcr.io/jfarcher/asterisk-hass-addon`.
 - The web UI no longer asks for the AMI password. It's served by a small built-in service behind ingress, which passes WebSocket connections (`/ws`, used by the SIP card) through to Asterisk as before.
 - The catch-all rule that rings internal phones moved from `[default]` into a `[local-extensions]` context, which `[default]` includes.
 

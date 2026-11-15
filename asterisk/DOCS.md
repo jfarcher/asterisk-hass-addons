@@ -9,7 +9,7 @@ Follow these steps to get the add-on installed on your system:
 
 1. Click here:
 
-   [![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FTECH7Fox%2Fasterisk-hass-addons)
+   [![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fjfarcher%2Fasterisk-hass-addons)
 
 1. Scroll down the page to find the new repository, and click in the new add-on named **_Asterisk_**.
 1. Click in the **_INSTALL_** button.
@@ -30,17 +30,17 @@ Open the add-on's web UI (**_OPEN WEB UI_**, or the sidebar panel) to set up you
 - **Outside lines**: connect a phone service provider (SIP trunk / VoIP account) with the server, username and password they gave you. Choose which phones ring for incoming calls, and how outside numbers are dialled: either just dial the number (anything with 5 or more digits, or starting with `+`), or dial a prefix such as `9` first.
 - **Advanced**: an Asterisk console and a button to reload the configuration.
 
-Settings from the web UI are stored in `/addon_configs/b35499aa_asterisk/asterisk/ui/pbx.json` and written to `pjsip_ui.conf` and `extensions_ui.conf`, which are included by the default `pjsip.conf` and `extensions.conf`. If you replace either of those files with your own in the `custom` folder, add `#include pjsip_ui.conf` or `#include extensions_ui.conf` to keep the web UI working. Calls to outside lines are routed from the `ui-outbound` context, which the default `[default]` context includes before `local-extensions`.
+Settings from the web UI are stored in `/addon_configs/aaf52c24_asterisk/asterisk/ui/pbx.json` and written to `pjsip_ui.conf` and `extensions_ui.conf`, which are included by the default `pjsip.conf` and `extensions.conf`. If you replace either of those files with your own in the `custom` folder, add `#include pjsip_ui.conf` or `#include extensions_ui.conf` to keep the web UI working. Calls to outside lines are routed from the `ui-outbound` context, which the default `[default]` context includes before `local-extensions`.
 
 The web UI is only reachable through Home Assistant. Note that Home Assistant lets non-admin users open it too, so anyone with a Home Assistant login can change phones and lines.
 
 ## Configuring Asterisk
 
-The add-on copies all the default Asterisk config files to `/addon_configs/b35499aa_asterisk/asterisk/default` on the add-on startup for your reference, and reads all customized config files from `/addon_configs/b35499aa_asterisk/asterisk/custom`.
+The add-on copies all the default Asterisk config files to `/addon_configs/aaf52c24_asterisk/asterisk/default` on the add-on startup for your reference, and reads all customized config files from `/addon_configs/aaf52c24_asterisk/asterisk/custom`.
 
-For example, if you need to change something in the `/etc/asterisk/extensions.conf`, you can copy the reference `/addon_configs/b35499aa_asterisk/asterisk/default/extensions.conf` to `/addon_configs/b35499aa_asterisk/asterisk/custom/extensions.conf` and make your changes there.
+For example, if you need to change something in the `/etc/asterisk/extensions.conf`, you can copy the reference `/addon_configs/aaf52c24_asterisk/asterisk/default/extensions.conf` to `/addon_configs/aaf52c24_asterisk/asterisk/custom/extensions.conf` and make your changes there.
 
-The way how this works is through symbolic links: if there is a custom config file, a symbolic link is created on top of the default config file pointing to the custom config file. Have in mind that this is only applicable for files under the root of `/addon_configs/b35499aa_asterisk/asterisk/custom`. For example, the `/addon_configs/b35499aa_asterisk/asterisk/custom/subdir/file.conf` **will not** be linked to `/etc/asterisk/subdir/file.conf`. The same applies to files that starts with a dot, like `.gitignore`.
+The way how this works is through symbolic links: if there is a custom config file, a symbolic link is created on top of the default config file pointing to the custom config file. Have in mind that this is only applicable for files under the root of `/addon_configs/aaf52c24_asterisk/asterisk/custom`. For example, the `/addon_configs/aaf52c24_asterisk/asterisk/custom/subdir/file.conf` **will not** be linked to `/etc/asterisk/subdir/file.conf`. The same applies to files that starts with a dot, like `.gitignore`.
 
 **Note**: _Remember to restart the add-on when the Asterisk configuration files are changed._
 
@@ -124,7 +124,7 @@ You can use the STDIN action to run any Asterisk CLI commands that you want. For
 ```yaml
 action: hassio.addon_stdin
 data:
-  addon: b35499aa_asterisk
+  addon: aaf52c24_asterisk
   input: dialplan reload
 ```
 
@@ -132,7 +132,7 @@ data:
 
 ## Startup script
 
-If the add-on finds a script at `/addon_configs/b35499aa_asterisk/asterisk/startup.sh` it will run it before starting Asterisk. You can use this to install custom packages, dependancies, etc.
+If the add-on finds a script at `/addon_configs/aaf52c24_asterisk/asterisk/startup.sh` it will run it before starting Asterisk. You can use this to install custom packages, dependancies, etc.
 
 ## Configuring the [Asterisk integration](https://github.com/TECH7Fox/Asterisk-integration)
 
@@ -147,7 +147,7 @@ If the add-on finds a script at `/addon_configs/b35499aa_asterisk/asterisk/start
 - **_Port_**: `8089`
 - **_Video_**: `false` _Video is not working at the moment, this will be fixed soon. For now you could use the camera entity instead._
 
-And add a extension. To see which extension every person has, you can look at `/addon_configs/b35499aa_asterisk/asterisk/default/sip_default.conf`.
+And add a extension. To see which extension every person has, you can look at `/addon_configs/aaf52c24_asterisk/asterisk/default/sip_default.conf`.
 
 ## Wiki
 

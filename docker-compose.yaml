@@ -1,6 +1,6 @@
 services:
   asterisk:
-    image: ghcr.io/tech7fox/asterisk-hass-addon:latest
+    image: ghcr.io/jfarcher/asterisk-hass-addon:latest
     build:
       context: ./asterisk
     pull_policy: build
