@@ -19,7 +19,7 @@ import threading
 import time
 import urllib.request
 
-from . import model
+from . import model, provision
 from .ami import Ami, AmiError
 
 log = logging.getLogger("pbx-ui")
@@ -55,6 +55,7 @@ class Settings:
     def __init__(self):
         env = os.environ.get
         self.port = int(env("PBX_UI_PORT", "8087"))
+        self.provision_port = int(env("PBX_UI_PROVISION_PORT", "8097"))
         self.config_path = env("PBX_UI_CONFIG", "/config/asterisk/ui/pbx.json")
         self.asterisk_dir = env("PBX_UI_ASTERISK_DIR", "/etc/asterisk")
         self.custom_dir = env("PBX_UI_CUSTOM_DIR", "/config/asterisk/custom")
@@ -79,6 +80,7 @@ class Backend:
         self.store = model.Store(settings.config_path, settings.asterisk_dir)
         self._server_address = None
         self._status_cache = (0.0, None)
+        self.seen = provision.Seen()
 
     # -- Asterisk access ---------------------------------------------------
 
@@ -237,6 +239,20 @@ class Backend:
             "ari_url": model.ARI_URL,
             "overrides": self.overrides(),
             "integrations_dir": self.store.integrations_dir,
+            "provisioning": self.provisioning_overview(config),
+        }
+
+    def provisioning_overview(self, config):
+        prov = config["provisioning"]
+        known = {e["provision"]["mac"] for e in config["extensions"] if e["provision"]}
+        waiting, fetched = self.seen.snapshot(known)
+        return {
+            "enabled": prov["enabled"],
+            "port": self.settings.provision_port,
+            "path": f"/p/{prov['token']}/" if prov["token"] else "",
+            "waiting": waiting,
+            "fetched": fetched,
+            "vendors": provision.VENDORS,
         }
 
     def _save(self, config):
@@ -260,8 +276,12 @@ class Backend:
             taken = self.taken_numbers(config, exclude=number)
             if existing is None and not str(data.get("number") or "").strip():
                 data = dict(data, number=model.next_free_number(taken))
+            macs = {
+                e["provision"]["mac"] for e in config["extensions"]
+                if e["provision"] and e is not existing
+            }
             ext = model.validate_extension(
-                data, existing, taken, config["outbound"], config["apps"]
+                data, existing, taken, config["outbound"], config["apps"], macs
             )
             if existing is None:
                 config["extensions"].append(ext)
@@ -330,6 +350,77 @@ class Backend:
                 data, {t["id"] for t in config["trunks"]}, all_numbers, config["apps"]
             )
             return self._save(config)
+
+    def save_provisioning(self, data):
+        with self.store.lock:
+            config = self.store.load()
+            prov = config["provisioning"]
+            enabled = data.get("enabled", prov["enabled"])
+            if not isinstance(enabled, bool):
+                raise model.ValidationError("Invalid value.", "enabled")
+            prov["enabled"] = enabled
+            if data.get("reset") or not prov["token"]:
+                prov["token"] = model.generate_password(24)
+            self.store.save(config)  # no Asterisk reload needed
+            return {"ok": True}
+
+    def dismiss_waiting(self, mac):
+        if not self.seen.dismiss(provision.normalize_mac(mac)):
+            raise NotFound("That phone isn't waiting.")
+        return {"ok": True}
+
+    def resync(self, number):
+        config = self.store.load()
+        ext = next((e for e in config["extensions"] if e["number"] == number), None)
+        if ext is None or not ext["provision"]:
+            raise NotFound("That phone isn't set up automatically.")
+        state = self.status()["endpoints"].get(number)
+        if state in (None, "Unavailable", "Invalid", "Unknown"):
+            raise model.ValidationError(
+                f"{ext['name']} isn't online, so it can't be asked. Restart the phone "
+                "instead: it downloads its settings when it starts."
+            )
+        notify = provision.CHECK_SYNC[ext["provision"]["vendor"]]
+        ok, output = self.cli(f"pjsip send notify {notify} endpoint {number}")
+        if not ok or "unable" in output.lower() or "not found" in output.lower():
+            raise model.ValidationError(
+                "Couldn't reach the phone. It must be online (signed in) for this; "
+                "otherwise restart it to pick up its settings."
+            )
+        return {"ok": True}
+
+    def provision_file(self, token, filename, user_agent, client, host_header):
+        """(status, content_type, body) for a phone asking for its settings."""
+        try:
+            config = self.store.load()
+        except (ValueError, model.ValidationError):
+            return 503, "text/plain", "Settings unavailable\n"
+        prov = config["provisioning"]
+        if not (prov["enabled"] and prov["token"] and token == prov["token"]):
+            return 404, "text/plain", "Not found\n"
+        parsed = provision.parse_request(filename, user_agent)
+        if parsed is None:
+            return 404, "text/plain", "Not found\n"
+        mac, vendor, kind = parsed
+        ext = next(
+            (e for e in config["extensions"] if e["provision"] and e["provision"]["mac"] == mac),
+            None,
+        )
+        if ext is None:
+            log.info("Phone %s (%s) asked for settings; waiting to be set up",
+                     provision.format_mac(mac), vendor)
+            self.seen.waiting(mac, vendor, user_agent, client)
+            return 404, "text/plain", "Not set up yet\n"
+        # The address the phone used to reach us is the one it can reach Asterisk on.
+        host = re.sub(r":\d+$", "", (host_header or "").strip()).strip("[]")
+        if not model.HOST_RE.match(host):
+            host = self.server_address() or "127.0.0.1"
+        if kind != "polycom-master":
+            self.seen.fetched(mac)
+            log.info("Sent settings to %s (%s, number %s)",
+                     provision.format_mac(mac), vendor, ext["number"])
+        content_type, body = provision.render(kind, ext, host, mac=mac)
+        return 200, content_type, body
 
     def save_ari(self, data):
         with self.store.lock:
@@ -412,6 +503,9 @@ ROUTES = [
     ("DELETE", r"/api/trunks/([a-z0-9-]+)", lambda b, m, d: b.delete_trunk(m[1])),
     ("PUT", r"/api/outbound", lambda b, m, d: b.save_outbound(d)),
     ("PUT", r"/api/ari", lambda b, m, d: b.save_ari(d)),
+    ("PUT", r"/api/provisioning", lambda b, m, d: b.save_provisioning(d)),
+    ("DELETE", r"/api/provisioning/waiting/([0-9a-f]{12})", lambda b, m, d: b.dismiss_waiting(m[1])),
+    ("POST", r"/api/extensions/(\d+)/resync", lambda b, m, d: b.resync(m[1])),
     ("POST", r"/api/apps", lambda b, m, d: b.save_app(None, d)),
     ("PUT", r"/api/apps/([a-z0-9-]+)", lambda b, m, d: b.save_app(m[1], d)),
     ("DELETE", r"/api/apps/([a-z0-9-]+)", lambda b, m, d: b.delete_app(m[1])),
@@ -557,6 +651,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.close_connection = True
 
 
+class ProvisionHandler(http.server.BaseHTTPRequestHandler):
+    """Serves phones' settings files on the LAN (phones can't sign in to Home Assistant)."""
+
+    server_version = "pbx-ui-provisioning"
+    backend = None  # set in serve()
+    PATH_RE = re.compile(r"^/p/([A-Za-z0-9]{16,64})/([A-Za-z0-9._-]{1,80})$")
+
+    def log_message(self, fmt, *args):
+        log.debug("provisioning %s - %s", self.client_address[0], fmt % args)
+
+    def do_GET(self):
+        match = self.PATH_RE.match(self.path.split("?", 1)[0])
+        if not match:
+            status, ctype, body = 404, "text/plain", "Not found\n"
+        else:
+            try:
+                status, ctype, body = self.backend.provision_file(
+                    match[1], match[2], self.headers.get("User-Agent", ""),
+                    self.client_address[0], self.headers.get("Host", ""),
+                )
+            except Exception:  # noqa: BLE001
+                log.exception("Provisioning request failed")
+                status, ctype, body = 500, "text/plain", "Error\n"
+        data = body.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    do_HEAD = do_GET
+
+
 def generate(settings):
     """Write the Asterisk files from pbx.json (used at add-on start)."""
     store = model.Store(settings.config_path, settings.asterisk_dir)
@@ -569,7 +698,20 @@ def generate(settings):
 
 
 def serve(settings):
-    Handler.backend = Backend(settings)
+    backend = Backend(settings)
+    Handler.backend = backend
+    ProvisionHandler.backend = backend
+    if settings.provision_port:
+        try:
+            prov_server = http.server.ThreadingHTTPServer(
+                ("0.0.0.0", settings.provision_port), ProvisionHandler
+            )
+        except OSError as err:
+            log.error("Automatic phone setup can't use port %s: %s", settings.provision_port, err)
+        else:
+            prov_server.daemon_threads = True
+            threading.Thread(target=prov_server.serve_forever, name="provisioning", daemon=True).start()
+            log.info("Automatic phone setup listening on port %s", settings.provision_port)
     server = http.server.ThreadingHTTPServer(("0.0.0.0", settings.port), Handler)
     server.daemon_threads = True
     log.info("Web UI listening on port %s", settings.port)

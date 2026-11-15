@@ -3,6 +3,13 @@
 
 # Changelog
 
+## 6.7.0
+
+### New Features
+
+- **Automatic setup for desk phones.** Yealink, Grandstream, Snom, Fanvil and Poly (Polycom) phones download their settings (number, password, server, name) from the add-on. Point a phone at the setup address shown on the Phones tab, or hand it out with DHCP option 66. Phones that ask appear under **Phones waiting to be set up**, and one click gives them a number. **Send settings now** asks an online phone to download them again (SIP `check-sync`).
+- New option `provisioning_port` (default 8097) for the port phones download their settings from. Automatic setup is off until it's turned on in the web UI.
+
 ## 6.6.0
 
 ### New Features

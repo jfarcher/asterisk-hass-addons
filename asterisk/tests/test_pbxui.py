@@ -15,7 +15,7 @@ sys.path.insert(
     os.path.join(os.path.dirname(__file__), "..", "rootfs", "usr", "local", "lib", "pbx-ui"),
 )
 
-from pbxui import model  # noqa: E402
+from pbxui import model, provision  # noqa: E402
 from pbxui.model import ValidationError  # noqa: E402
 
 TRUNK = {
@@ -207,6 +207,65 @@ class Apps(unittest.TestCase):
             config["apps"] = []
             store.save(config)
             self.assertFalse(os.path.exists(handoff))
+
+
+class Provisioning(unittest.TestCase):
+    EXT = {"number": "200", "name": "Kitchen & Co", "password": "p&ss<word>1", "kind": "phone"}
+
+    def test_parse_requests(self):
+        cases = [
+            ("805ec0123456.cfg", "Yealink SIP-T46U 108.86.0.20 80:5e:c0:12:34:56", ("805ec0123456", "yealink", "yealink")),
+            ("0c383e123456.cfg", "Fanvil X4U 2.12.1 0c383e123456", ("0c383e123456", "fanvil", "fanvil")),
+            ("0004f2123456.cfg", "FileTransport PolycomVVX-VVX_450-UA/6.4.3.5018", ("0004f2123456", "polycom", "polycom-master")),
+            ("0004f2123456-asterisk.cfg", "FileTransport PolycomVVX-VVX_450-UA/6.4.3", ("0004f2123456", "polycom", "polycom-config")),
+            ("cfg000b82123456.xml", "Grandstream Model HW GRP2614 SW 1.0.5.68 DevId 000b82123456", ("000b82123456", "grandstream", "grandstream")),
+            ("snomD785.htm", "Mozilla/4.0 (compatible; snomD785-SIP 10.1.159.12 000413123456)", ("000413123456", "snom", "snom")),
+            ("snomD785-000413123456.htm", "", ("000413123456", "snom", "snom")),
+            ("805EC0123456.cfg", "", ("805ec0123456", "yealink", "yealink")),  # OUI fallback
+        ]
+        for name, ua, expected in cases:
+            self.assertEqual(provision.parse_request(name, ua), expected, name)
+        for name in ["y000000000028.cfg", "000000000000.cfg", "sip.ld", "../etc/passwd", "aabbccddeeff.cfg"]:
+            self.assertIsNone(provision.parse_request(name, "curl/8"), name)
+
+    def test_models(self):
+        self.assertEqual(provision.model_from("yealink", "Yealink SIP-T46U 108.86"), "T46U")
+        self.assertEqual(provision.model_from("polycom", "FileTransport PolycomVVX-VVX_450-UA/6"), "VVX 450")
+        self.assertEqual(provision.model_from("snom", "snomD785-SIP 10"), "D785")
+
+    def test_render_all_brands(self):
+        for kind in ["yealink", "fanvil", "grandstream", "snom", "polycom-config"]:
+            ctype, body = provision.render(kind, self.EXT, "192.168.1.10")
+            self.assertIn("200", body, kind)
+            self.assertIn("192.168.1.10", body, kind)
+            if ctype == "application/xml":
+                import xml.dom.minidom
+                xml.dom.minidom.parseString(body)  # well-formed despite & and < >
+                self.assertNotIn("p&ss<", body)
+        _, master = provision.render("polycom-master", self.EXT, "h", mac="0004f2123456")
+        self.assertIn('CONFIG_FILES="0004f2123456-asterisk.cfg"', master)
+
+    def test_extension_provision_validation(self):
+        ext = model.validate_extension({"number": "200", "name": "A",
+                                        "provision": {"mac": "80:5E:C0:12:34:56"}})
+        self.assertEqual(ext["provision"], {"mac": "805ec0123456", "vendor": "yealink"})
+        with self.assertRaises(ValidationError):
+            model.validate_extension({"number": "200", "name": "A", "provision": {"mac": "nope"}})
+        with self.assertRaises(ValidationError):  # brand unknown and not guessable
+            model.validate_extension({"number": "200", "name": "A", "provision": {"mac": "aabbccddeeff"}})
+        with self.assertRaises(ValidationError):
+            model.validate_extension({"number": "200", "name": "A", "provision": {"mac": "805ec0123456"}},
+                                     taken_macs={"805ec0123456"})
+
+    def test_seen(self):
+        seen = provision.Seen()
+        seen.waiting("805ec0123456", "yealink", "Yealink SIP-T46U 108", "192.168.1.50")
+        waiting, _ = seen.snapshot(set())
+        self.assertEqual(waiting[0]["model"], "T46U")
+        seen.fetched("805ec0123456")
+        waiting, fetched = seen.snapshot({"805ec0123456"})
+        self.assertEqual(waiting, [])
+        self.assertIn("805ec0123456", fetched)
 
 
 if __name__ == "__main__":

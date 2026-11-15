@@ -7,10 +7,12 @@
 
 if [[ -n "${SUPERVISOR_TOKEN:-}" ]]; then
     PBX_UI_PORT=$(bashio::addon.ingress_port)
+    PBX_UI_PROVISION_PORT=$(bashio::config 'provisioning_port' 8097)
 else
     PBX_UI_PORT="${PBX_UI_PORT:-8087}"
+    PBX_UI_PROVISION_PORT="${PBX_UI_PROVISION_PORT:-8097}"
 fi
-export PBX_UI_PORT
+export PBX_UI_PORT PBX_UI_PROVISION_PORT
 
 if [[ "${__BASHIO_LOG_LEVEL}" -ge 6 ]]; then
     export PBX_UI_LOG_LEVEL=DEBUG

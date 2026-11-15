@@ -66,6 +66,11 @@ configuration:
     name: Google API Key
     description: >-
       The API Key for speech-to-text.
+  provisioning_port:
+    name: Phone Setup Port
+    description: >-
+      The port desk phones download their settings from, when automatic setup
+      is turned on in the web UI. Change it if another app already uses 8097.
   log_level:
     name: Log Level
     description: >-

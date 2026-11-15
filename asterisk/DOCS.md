@@ -27,6 +27,13 @@ Or you can also use it as a standalone docker container. See [4.0.0 release note
 Open the add-on's web UI (**_OPEN WEB UI_**, or the sidebar panel) to set up your phone system without editing Asterisk files.
 
 - **Phones**: add desk phones, phone apps, Home Assistant SIP cards/tablets and doorbells. Each gets a short number (starting at 200) and a generated password. **How to connect** shows exactly what to type into the device, and the list shows whether each one is online. Extensions created for Home Assistant people by the [`auto_add`](#option-auto_add) option are listed too, but are still managed by that option.
+- **Automatic setup for desk phones** (bottom of the Phones tab): Yealink, Grandstream, Snom, Fanvil and Poly (Polycom) phones can download their settings from the add-on, so you don't have to type them in.
+  1. Turn it on and copy the **Setup address**, such as `http://192.168.1.10:8097/p/<secret>/`.
+  2. Enter that address as the provisioning or auto-provision server in the phone's web page, and restart the phone. If your router lets you set DHCP option 66, set it there instead and factory-reset phones find it by themselves.
+  3. The phone appears under **Phones waiting to be set up**. Press **Set up** and give it a name.
+  4. Restart the phone again, or press **Send settings now** once it's online.
+
+  You can also type a phone's MAC address under **More options** when adding or editing it. Settings are served on port 8097 (the [`provisioning_port`](#option-provisioning_port) option) to phones that know the secret address, and only for MAC addresses you've set up. They travel unencrypted on your network.
 - **Outside lines**: connect a phone service provider (SIP trunk / VoIP account) with the server, username and password they gave you. Choose which phones ring for incoming calls, and how outside numbers are dialled: either just dial the number (anything with 5 or more digits, or starting with `+`), or dial a prefix such as `9` first.
 - **Apps**: let other Home Assistant apps answer, place and connect calls through ARI (the Asterisk REST Interface). Turn ARI on with **Allow apps to control calls**, and add a login for each app. You can also send a range of numbers to an app, such as 800-899. Apps we know about, like [Kiosk Intercom Gateway](https://github.com/jfarcher/kiosk-intercom-gateway), connect with one click: press **Connect**, then **Set up Asterisk for me** in the gateway. The status shows **Connected** once the app is signed in.
 - **Advanced**: an Asterisk console and a button to reload the configuration.
@@ -117,6 +124,10 @@ Which extension to get the voicemails from.
 
 The API Key for the speech-to-text used by Asterisk Mailbox.
 You can get a key [here](https://cloud.google.com/speech-to-text). Google says it's free, but requires a billing account.
+
+### Option: `provisioning_port`
+
+The port desk phones download their settings from, when **Automatic setup for desk phones** is turned on in the web UI. The add-on uses the host's network, so change it if another app already uses 8097.
 
 ### Option: `log_level`
 

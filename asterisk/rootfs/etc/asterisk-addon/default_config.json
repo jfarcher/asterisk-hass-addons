@@ -12,5 +12,6 @@
   "mailbox_password": "",
   "mailbox_extension": "100",
   "mailbox_google_api_key": "",
+  "provisioning_port": 8097,
   "log_level": "info"
 }

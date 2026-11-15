@@ -22,6 +22,8 @@ import string
 import tempfile
 import threading
 
+from . import provision
+
 SCHEMA_VERSION = 1
 
 KINDS = {
@@ -53,6 +55,8 @@ APP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 ARI_USER_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 STASIS_APP_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 ROUTE_PREFIX_RE = re.compile(r"^[0-9]{1,3}$")
+
+PROVISION_TOKEN_RE = re.compile(r"^[A-Za-z0-9]{16,64}$")
 
 ARI_URL = "http://127.0.0.1:8088"
 HANDOFF_VERSION = 1
@@ -94,6 +98,7 @@ def default_config():
         "outbound": {"mode": "direct", "prefix": "9", "trunk": None},
         "ari": {"enabled": False},
         "apps": [],
+        "provisioning": {"enabled": False, "token": ""},
     }
 
 
@@ -157,7 +162,7 @@ def parse_server(value):
 # ---------------------------------------------------------------------------
 
 
-def validate_extension(data, existing=None, taken=(), outbound=None, apps=()):
+def validate_extension(data, existing=None, taken=(), outbound=None, apps=(), taken_macs=()):
     """Return a clean extension dict built from user input.
 
     ``existing`` is the stored extension when editing (keeps its password if
@@ -200,13 +205,35 @@ def validate_extension(data, existing=None, taken=(), outbound=None, apps=()):
 
     video = _bool(data, "video", existing.get("video", kind != "phone"))
 
+    prov = clean_provision(data.get("provision", existing.get("provision")), taken_macs)
+
     return {
         "number": number,
         "name": name,
         "kind": kind,
         "password": password,
         "video": video,
+        "provision": prov,
     }
+
+
+def clean_provision(value, taken_macs=()):
+    """Automatic setup for a desk phone: its MAC address and brand, or None."""
+    if not value:
+        return None
+    if not isinstance(value, dict):
+        raise ValidationError("Invalid automatic setup.", "mac")
+    mac = provision.normalize_mac(value.get("mac"))
+    if not mac:
+        raise ValidationError(
+            "MAC address should be 12 letters and digits, like 80:5E:C0:12:34:56.", "mac"
+        )
+    if mac in taken_macs:
+        raise ValidationError("Another phone is already set up with that MAC address.", "mac")
+    vendor = str(value.get("vendor") or "") or provision.vendor_from("", mac)
+    if vendor not in provision.VENDORS:
+        raise ValidationError("Choose the phone's brand.", "vendor")
+    return {"mac": mac, "vendor": vendor}
 
 
 def slugify(name, taken):
@@ -460,9 +487,12 @@ def normalize(config):
         raise ValidationError("pbx.json must contain a JSON object.")
     clean = default_config()
     seen = set()
+    macs = set()
     for ext in config.get("extensions", []):
-        ext = validate_extension(ext, taken=seen)
+        ext = validate_extension(ext, taken=seen, taken_macs=macs)
         seen.add(ext["number"])
+        if ext["provision"]:
+            macs.add(ext["provision"]["mac"])
         clean["extensions"].append(ext)
     ids = set()
     for trunk in config.get("trunks", []):
@@ -475,6 +505,11 @@ def normalize(config):
     clean["outbound"] = validate_outbound(config.get("outbound", {}), ids, set())
     ari = config.get("ari") or {}
     clean["ari"] = {"enabled": _bool(ari, "enabled", False)}
+    prov = config.get("provisioning") or {}
+    token = str(prov.get("token") or "")
+    if token and not PROVISION_TOKEN_RE.match(token):
+        raise ValidationError("Invalid provisioning token.")
+    clean["provisioning"] = {"enabled": _bool(prov, "enabled", False), "token": token}
     for app in config.get("apps", []):
         app_id = str(app.get("id") or "")
         if not APP_ID_RE.match(app_id):

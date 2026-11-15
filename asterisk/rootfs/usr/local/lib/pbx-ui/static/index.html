@@ -494,7 +494,121 @@ function renderPhones() {
       })),
     ];
   }
-  root.replaceChildren(head, body, ...othersBlock);
+  root.replaceChildren(head, ...waitingBlock(), body, ...othersBlock, provisioningCard());
+}
+
+function provisioningUrl() {
+  const p = data.provisioning;
+  if (!p.path) return "";
+  return `http://${data.server.address || location.hostname}:${p.port}${p.path}`;
+}
+
+function ago(ts) {
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} days ago`;
+}
+
+function formatMac(mac) {
+  return mac.match(/../g).join(":").toUpperCase();
+}
+
+function waitingBlock() {
+  const p = data.provisioning;
+  if (!p.enabled || !p.waiting.length) return [];
+  return [
+    h("h3", { class: "group", style: "margin-top:0" }, "Phones waiting to be set up"),
+    h("div", { class: "list", style: "margin-bottom:20px" }, p.waiting.map((w) => {
+      const label = `${p.vendors[w.vendor] || w.vendor}${w.model ? " " + w.model : ""}`;
+      return h("div", { class: "card row" },
+        h("span", { class: "icon-bubble" }, icon("phone")),
+        h("div", { class: "info" },
+          h("div", { class: "name" }, label),
+          h("div", { class: "muted small" }, `MAC ${formatMac(w.mac)} · ${w.address} · asked ${ago(w.seen)}`),
+        ),
+        h("div", { class: "actions" },
+          h("button", { class: "primary", onclick: () => phoneDialog(null, "phone",
+            { name: label, provision: { mac: w.mac, vendor: w.vendor } }) }, "Set up"),
+          h("button", { onclick: async () => {
+            try { await api("DELETE", `api/provisioning/waiting/${w.mac}`); await refresh(); }
+            catch (err) { toast(err.message, "bad"); }
+          } }, "Ignore"),
+        ),
+      );
+    })),
+  ];
+}
+
+const VENDOR_HINTS = {
+  yealink: "Yealink: web page → Settings → Auto Provision → Server URL, then Confirm and Autoprovision Now.",
+  grandstream: "Grandstream: web page → Maintenance → Upgrade and Provisioning → Config Server Path (HTTP), then Provision.",
+  snom: "Snom: web page → Advanced → Update → Setting URL. Add {mac}.xml to the end of the address.",
+  fanvil: "Fanvil: web page → System → Auto Provision → Server URL (HTTP).",
+  polycom: "Poly: web page → Settings → Provisioning Server → Server Type HTTP, Server Address, then reboot.",
+};
+
+function provisioningCard() {
+  const p = data.provisioning;
+  const url = provisioningUrl();
+  const toggle = h("input", {
+    type: "checkbox", checked: p.enabled, "aria-label": "Automatic setup for desk phones",
+    onchange: async (e) => {
+      e.target.disabled = true;
+      try {
+        await api("PUT", "api/provisioning", { enabled: e.target.checked });
+        await refresh();
+      } catch (err) {
+        toast(err.message, "bad");
+        e.target.checked = !e.target.checked;
+      } finally { e.target.disabled = false; }
+    },
+  });
+  return h("div", { class: "card pad", style: "margin-top:28px" },
+    h("div", { class: "inline", style: "justify-content:space-between;align-items:flex-start" },
+      h("div", {},
+        h("h3", {}, "Automatic setup for desk phones"),
+        h("p", { class: "muted small", style: "margin-top:4px" },
+          "Yealink, Grandstream, Snom, Fanvil and Poly phones can download their settings from here, ",
+          "so you don't have to type them in."),
+      ),
+      h("label", { class: "switch" }, toggle, h("span", {})),
+    ),
+    p.enabled && url ? [
+      h("div", { class: "field", style: "margin:14px 0 6px" },
+        h("span", { class: "label" }, "Setup address"),
+        h("div", { class: "inline" },
+          h("input", { type: "text", class: "mono", readonly: true, value: url, "aria-label": "Setup address" }),
+          h("button", { type: "button", class: "icon-only", title: "Copy", onclick: () => copyText(url) }, icon("copy")),
+        ),
+      ),
+      h("ol", { class: "steps small" },
+        h("li", {}, "Enter the address above in the phone's own web page (where it asks for a provisioning or auto-provision server), and restart it."),
+        h("li", {}, "The phone appears at the top of this page under “Phones waiting to be set up”. Press ", h("strong", {}, "Set up"), "."),
+        h("li", {}, "Restart the phone again, or press ", h("strong", {}, "Send settings now"), ". It signs in by itself."),
+      ),
+      h("details", { class: "more", style: "margin-bottom:0" },
+        h("summary", {}, "Where to find the setting on each brand"),
+        h("ul", { class: "small", style: "margin:0;padding-left:1.2em" },
+          Object.values(VENDOR_HINTS).map((t) => h("li", { style: "margin-bottom:4px" }, t))),
+        h("p", { class: "hint", style: "margin-top:8px" },
+          "Zero-touch: if your router lets you set DHCP option 66, set it to the address above. Factory-reset phones then find it without any typing."),
+        h("p", { class: "hint", style: "margin-top:8px" },
+          "The address contains a secret, and phones' passwords are sent unencrypted on your network. ",
+          h("button", { type: "button", class: "link", onclick: resetProvisioningLink }, "Make a new address"),
+          " if it has been shared by mistake; phones already set up need the new one."),
+      ),
+    ] : null,
+  );
+}
+
+async function resetProvisioningLink() {
+  try {
+    await api("PUT", "api/provisioning", { reset: true });
+    await refresh();
+    toast("New setup address made. Update it in phones that use the old one.", "warn");
+  } catch (err) { toast(err.message, "bad"); }
 }
 
 function kindChoices(onPick) {
@@ -514,14 +628,35 @@ function phoneRow(ext) {
       h("div", { class: "name" }, ext.name),
       h("div", { class: "muted small" },
         h("span", { class: "number" }, `Number ${ext.number}`), " · ", KIND_INFO[ext.kind].title),
+      ext.provision ? h("div", { class: "muted small" }, provisionLine(ext)) : null,
     ),
     h("span", { class: `pill ${st.cls}` }, st.text),
     h("div", { class: "actions" },
+      ext.provision ? h("button", { onclick: () => resync(ext) }, "Send settings now") : null,
       h("button", { onclick: () => setupDialog(ext) }, "How to connect"),
       h("button", { onclick: () => testRing(ext.number) }, "Test ring"),
       h("button", { onclick: () => phoneDialog(ext) }, "Edit"),
     ),
   );
+}
+
+function provisionLine(ext) {
+  const p = data.provisioning;
+  const vendor = p.vendors[ext.provision.vendor] || ext.provision.vendor;
+  const when = p.fetched[ext.provision.mac];
+  const online = phoneStatus(ext.number).cls !== "idle";
+  let state = "";
+  if (!p.enabled) state = " · automatic setup is turned off";
+  else if (when) state = ` · settings downloaded ${ago(when)}`;
+  else if (!online) state = " · waiting for it to download its settings";
+  return `Set up automatically (${vendor}, ${formatMac(ext.provision.mac)})${state}`;
+}
+
+async function resync(ext) {
+  try {
+    await api("POST", `api/extensions/${encodeURIComponent(ext.number)}/resync`);
+    toast(`Asked ${ext.name} to download its settings.`);
+  } catch (err) { toast(err.message, "bad"); }
 }
 
 function renderLines() {
@@ -1006,7 +1141,7 @@ function randomPassword() {
   return Array.from(bytes, (b) => chars[b % chars.length]).join("");
 }
 
-function phoneDialog(ext, presetKind) {
+function phoneDialog(ext, presetKind, prefill) {
   if (!ext && !presetKind) {
     openDialog({
       title: "Add a phone",
@@ -1018,6 +1153,18 @@ function phoneDialog(ext, presetKind) {
   }
   const kind = ext ? ext.kind : presetKind;
   const info = KIND_INFO[kind];
+  const pre = prefill || {};
+  const prov = ext ? ext.provision : pre.provision;
+  const vendors = data.provisioning.vendors;
+  const autoSetup = kind === "phone" ? h("div", {},
+    h("div", { class: "grid2" },
+      field("MAC address", h("input", { type: "text", name: "mac", class: "mono", value: prov ? formatMac(prov.mac) : "", placeholder: "e.g. 80:5E:C0:12:34:56", autocomplete: "off" }),
+        "On a sticker under the phone. Leave blank to set it up by hand."),
+      field("Brand", h("select", { name: "vendor" },
+        h("option", { value: "" }, "Work it out"),
+        Object.entries(vendors).map(([v, label]) => h("option", { value: v, selected: prov && prov.vendor === v }, label)))),
+    ),
+  ) : null;
   const pw = passwordInput("phonePw", "password", ext ? ext.password : randomPassword());
   const regen = h("button", { type: "button", onclick: () => { pw.input.value = randomPassword(); pw.input.type = "text"; } }, "New password");
 
@@ -1029,13 +1176,16 @@ function phoneDialog(ext, presetKind) {
     title: ext ? `Edit ${ext.name}` : `Add a ${info.title.toLowerCase()}`,
     intro: ext ? null : info.blurb,
     body: [
-      field("Name", h("input", { type: "text", name: "name", value: ext ? ext.name : "", placeholder: info.placeholder, maxlength: "60", required: true }),
+      prov && !ext ? h("div", { class: "banner info" }, `This phone (${formatMac(prov.mac)}) will download these settings by itself.`) : null,
+      field("Name", h("input", { type: "text", name: "name", value: ext ? ext.name : (pre.name || ""), placeholder: info.placeholder, maxlength: "60", required: true }),
         "Shown on other phones when this one calls."),
       field("Number", h("input", { type: "text", name: "number", inputmode: "numeric", class: "mono", value: ext ? ext.number : data.next_number, maxlength: "4" }),
         "Dial this from other phones to ring it. 2 to 4 digits."),
       kindSelect,
-      h("details", { class: "more" },
+      h("details", { class: "more", open: Boolean(prov && ext) },
         h("summary", {}, "More options"),
+        autoSetup ? h("h3", { class: "small", style: "margin:0 0 8px" }, "Automatic setup") : null,
+        autoSetup,
         h("div", { class: "field" },
           h("label", { for: "phonePw" }, "Password"),
           h("div", { class: "inline" }, pw.row, regen),
@@ -1063,6 +1213,10 @@ function phoneDialog(ext, presetKind) {
         password: fd.get("password"),
         video: fd.get("video") === "on",
       };
+      if (kind === "phone") {
+        const mac = (fd.get("mac") || "").trim();
+        payload.provision = mac ? { mac, vendor: fd.get("vendor") || null } : null;
+      }
       const res = ext
         ? await api("PUT", `api/extensions/${encodeURIComponent(ext.number)}`, payload)
         : await api("POST", "api/extensions", payload);
@@ -1106,7 +1260,17 @@ function setupDialog(ext, justAdded) {
   const add = (label, value, extra) => rows.push(h("dt", {}, label), h("dd", {}, value), extra || copyBtn(value));
 
   let steps;
-  if (ext.kind === "browser") {
+  if (ext.provision) {
+    steps = h("ol", { class: "steps small" },
+      data.provisioning.enabled ? null
+        : h("li", {}, "Turn on ", h("strong", {}, "Automatic setup for desk phones"), " at the bottom of the Phones tab."),
+      h("li", {}, "Restart the phone. It downloads these settings and signs in by itself."),
+      h("li", {}, "It shows as “Online” here once it's connected. The details below are only needed if you set it up by hand."),
+    );
+    add("Server", server);
+    add("Port", "5060", h("span", {}));
+    add("Username", ext.number);
+  } else if (ext.kind === "browser") {
     steps = h("ol", { class: "steps small" },
       h("li", {}, "Open the dashboard with the SIP card, or the card's settings in the SIP Core integration."),
       h("li", {}, "Add this number as a user, with the password below."),

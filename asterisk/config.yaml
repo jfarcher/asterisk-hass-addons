@@ -1,5 +1,5 @@
 name: Asterisk
-version: 6.6.0
+version: 6.7.0
 breaking_versions:
   - 6.0.0
   - 5.1.0
@@ -33,6 +33,7 @@ options:
   mailbox_password: ""
   mailbox_extension: "100"
   mailbox_google_api_key: ""
+  provisioning_port: 8097
   log_level: info
 schema:
   ami_password: password
@@ -50,6 +51,7 @@ schema:
   mailbox_password: password
   mailbox_extension: str
   mailbox_google_api_key: password
+  provisioning_port: port
   log_level: list(all|trace|debug|info|notice|warning|error|fatal|off)
 host_network: true
 init: false
