@@ -3,6 +3,12 @@
 
 # Changelog
 
+## 6.9.1
+
+### Other Changes
+
+- The sidebar shows an asterisk icon instead of the default puzzle piece.
+
 ## 6.9.0
 
 ### New Features
