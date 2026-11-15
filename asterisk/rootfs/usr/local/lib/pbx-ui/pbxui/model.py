@@ -250,7 +250,7 @@ def slugify(name, taken):
     return candidate
 
 
-def validate_trunk(data, existing=None, known_numbers=(), taken_ids=()):
+def validate_trunk(data, existing=None, known_numbers=(), taken_ids=(), outbound=None):
     existing = existing or {}
 
     name = clean_name(_text(data, "name", existing.get("name", "")))
@@ -319,6 +319,10 @@ def validate_trunk(data, existing=None, known_numbers=(), taken_ids=()):
         if target not in clean_ring:
             clean_ring.append(target)
 
+    ring_other = clean_ring_other(
+        data.get("ring_other", existing.get("ring_other", [])), clean_ring, outbound
+    )
+
     trunk_id = existing.get("id") or slugify(name, taken_ids)
 
     return {
@@ -333,10 +337,43 @@ def validate_trunk(data, existing=None, known_numbers=(), taken_ids=()):
         "caller_id": caller_id,
         "register": register,
         "ring": clean_ring,
+        "ring_other": ring_other,
     }
 
 
-def validate_outbound(data, trunk_ids, all_numbers, apps=()):
+def clean_ring_other(value, phones=(), outbound=None):
+    """Extra numbers an outside line rings, such as a kiosk (801) handled by an app.
+
+    They're dialled through [default], so they must look like internal numbers:
+    anything that could match a dial-out rule would turn an incoming call into
+    an outgoing one.
+    """
+    if isinstance(value, str):
+        value = re.split(r"[\s,;]+", value)
+    if not isinstance(value, list):
+        raise ValidationError("Invalid list of numbers.", "ring_other")
+    prefix = outbound.get("prefix") if outbound and outbound.get("mode") == "prefix" else ""
+    clean = []
+    for number in value:
+        number = str(number).strip()
+        if not number:
+            continue
+        if not EXTENSION_RE.match(number):
+            raise ValidationError(f"{number} isn't an internal number (2 to 4 digits).", "ring_other")
+        if number in RESERVED_NUMBERS:
+            raise ValidationError(f"{number} is for call parking, so it can't ring.", "ring_other")
+        if prefix and number.startswith(prefix):
+            raise ValidationError(
+                f"{number} starts with {prefix}, which dials outside lines.", "ring_other"
+            )
+        if number not in clean and number not in phones:
+            clean.append(number)
+    if len(clean) > 10:
+        raise ValidationError("Ring at most 10 other numbers.", "ring_other")
+    return clean
+
+
+def validate_outbound(data, trunk_ids, all_numbers, apps=(), other_numbers=()):
     mode = _text(data, "mode", "direct")
     if mode not in OUTBOUND_MODES:
         raise ValidationError("Choose how outside numbers are dialled.", "mode")
@@ -349,6 +386,13 @@ def validate_outbound(data, trunk_ids, all_numbers, apps=()):
             raise ValidationError(
                 f"Prefix {prefix} clashes with phone number(s) "
                 f"{', '.join(clashes)}. Pick a different prefix.",
+                "prefix",
+            )
+        clashes = sorted(n for n in other_numbers if n.startswith(prefix))
+        if clashes:
+            raise ValidationError(
+                f"Prefix {prefix} clashes with {', '.join(clashes)}, which an outside "
+                "line rings. Pick a different prefix.",
                 "prefix",
             )
         for app in apps:
@@ -806,9 +850,12 @@ def render_dialplan(config):
         out.append(
             f"exten => s,1,NoOp(Incoming call on {trunk['name']} from ${{CALLERID(all)}})"
         )
-        if trunk["ring"]:
-            targets = "&".join(f"Local/{n}@local-extensions" for n in trunk["ring"])
-            out.append(f" same => n,Dial({targets},45)")
+        # Phones ring directly; other numbers (such as a kiosk sent to an app)
+        # go through [default], where apps' numbers are routed.
+        targets = [f"Local/{n}@local-extensions" for n in trunk["ring"]]
+        targets += [f"Local/{n}@default" for n in trunk.get("ring_other", [])]
+        if targets:
+            out.append(f" same => n,Dial({'&'.join(targets)},45)")
         else:
             out.append(" same => n,Answer()")
             out.append(" same => n,Playback(vm-nobodyavail)")

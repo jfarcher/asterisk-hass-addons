@@ -3,6 +3,12 @@
 
 # Changelog
 
+## 6.9.0
+
+### New Features
+
+- Outside lines can **also ring other numbers**, such as a kiosk's number from Kiosk Intercom Gateway (801). They ring alongside the phones you tick. Numbers must be internal (2-4 digits), so an incoming call can never be sent back out on an outside line.
+
 ## 6.8.2
 
 ### Bug Fixes

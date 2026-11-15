@@ -283,5 +283,25 @@ class Network(unittest.TestCase):
                 model.validate_network({"sip_address": bad})
 
 
+class RingOther(unittest.TestCase):
+    def test_validation(self):
+        t = model.validate_trunk(dict(TRUNK, ring_other="801, 802 801"))
+        self.assertEqual(t["ring_other"], ["801", "802"])
+        self.assertEqual(model.validate_trunk(dict(TRUNK, ring_other=["200"]))["ring_other"], [])  # already a phone
+        for bad in ["07700900123", "+44", "444", "8a1"]:
+            with self.assertRaises(ValidationError, msg=bad):
+                model.validate_trunk(dict(TRUNK, ring_other=[bad]))
+        with self.assertRaises(ValidationError):  # would match the dial-out prefix
+            model.validate_trunk(dict(TRUNK, ring_other=["901"]), outbound={"mode": "prefix", "prefix": "9"})
+        with self.assertRaises(ValidationError):  # switching to a clashing prefix
+            model.validate_outbound({"mode": "prefix", "prefix": "8"}, set(), set(), (), {"801"})
+
+    def test_dialplan(self):
+        config = model.default_config()
+        config["trunks"] = [model.validate_trunk(dict(TRUNK, ring_other=["801"]))]
+        plan = model.render_dialplan(config)
+        self.assertIn("Dial(Local/200@local-extensions&Local/801@default,45)", plan)
+
+
 if __name__ == "__main__":
     unittest.main()

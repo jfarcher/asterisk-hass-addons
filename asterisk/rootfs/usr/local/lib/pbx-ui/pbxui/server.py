@@ -354,7 +354,7 @@ class Backend:
             known = {e["number"] for e in config["extensions"]}
             known |= {o["number"] for o in self.other_extensions(config, self.status())}
             trunk = model.validate_trunk(
-                data, existing, known, {t["id"] for t in config["trunks"]}
+                data, existing, known, {t["id"] for t in config["trunks"]}, config["outbound"]
             )
             if existing is None:
                 config["trunks"].append(trunk)
@@ -383,8 +383,9 @@ class Backend:
             config = self.store.load()
             all_numbers = {e["number"] for e in config["extensions"]}
             all_numbers |= {o["number"] for o in self.other_extensions(config, self.status())}
+            others = {n for t in config["trunks"] for n in t["ring_other"]}
             config["outbound"] = model.validate_outbound(
-                data, {t["id"] for t in config["trunks"]}, all_numbers, config["apps"]
+                data, {t["id"] for t in config["trunks"]}, all_numbers, config["apps"], others
             )
             return self._save(config)
 

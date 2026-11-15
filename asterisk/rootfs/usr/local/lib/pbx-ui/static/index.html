@@ -748,9 +748,8 @@ function renderLines() {
 
   const cards = trunks.map((t) => {
     const st = lineStatus(t);
-    const ring = t.ring.length
-      ? t.ring.map(phoneLabel).join(", ")
-      : "nobody – callers hear “nobody is available”";
+    const rung = [...t.ring.map(phoneLabel), ...(t.ring_other || [])];
+    const ring = rung.length ? rung.join(", ") : "nobody – callers hear “nobody is available”";
     return h("div", { class: "card row" },
       h("span", { class: "icon-bubble" }, icon("line")),
       h("div", { class: "info" },
@@ -1396,6 +1395,9 @@ function lineDialog(trunk) {
               h("span", {}, p.name || "Phone", " ", h("span", { class: "muted" }, `(${p.number})`)))))
           : h("p", { class: "hint" }, "You haven't added any phones yet. Callers will hear “nobody is available” until you do."),
       ),
+      field("Also ring other numbers",
+        h("input", { type: "text", name: "ring_other", class: "mono", value: (t.ring_other || []).join(", "), placeholder: otherNumbersExample(), autocomplete: "off" }),
+        otherNumbersHint()),
       h("details", { class: "more" },
         h("summary", {}, "More options"),
         field("Login name", h("input", { type: "text", name: "auth_username", class: "mono", value: t.auth_username || "", autocomplete: "off" }),
@@ -1430,6 +1432,7 @@ function lineDialog(trunk) {
         transport: fd.get("transport"),
         register: fd.get("register") === "on",
         ring: fd.getAll("ring"),
+        ring_other: (fd.get("ring_other") || "").split(/[\s,;]+/).filter(Boolean),
       };
       const res = trunk
         ? await api("PUT", `api/trunks/${encodeURIComponent(t.id)}`, payload)
@@ -1439,6 +1442,20 @@ function lineDialog(trunk) {
       await refresh();
     },
   });
+}
+
+function otherNumbersExample() {
+  const app = data.config.apps.find((a) => a.route);
+  return app ? `e.g. ${app.route.prefix}${"0".repeat(app.route.length - app.route.prefix.length - 1)}1` : "e.g. 801";
+}
+
+function otherNumbersHint() {
+  const routed = data.config.apps.filter((a) => a.route)
+    .map((a) => `${a.name}: ${routeLabel(a.route).replace("Numbers ", "").replace(" go to it", "")}`);
+  return [
+    "Internal numbers that aren't in the list above, separated by commas. For example a kiosk's number from Kiosk Intercom Gateway.",
+    routed.length ? ` Numbers handled by apps: ${routed.join("; ")}.` : "",
+  ].join("");
 }
 
 function confirmRemoveLine(t) {
