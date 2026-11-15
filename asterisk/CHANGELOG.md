@@ -3,6 +3,12 @@
 
 # Changelog
 
+## 6.8.1
+
+### Bug Fixes
+
+- Opening the phone setup address in a browser showed "Not found", even though it worked for phones. It now says automatic setup is working (or that it's turned off). A wrong address still gets "Not found".
+
 ## 6.8.0
 
 ### New Features

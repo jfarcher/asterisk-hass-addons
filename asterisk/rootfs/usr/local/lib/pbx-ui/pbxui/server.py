@@ -440,8 +440,20 @@ class Backend:
         except (ValueError, model.ValidationError):
             return 503, "text/plain", "Settings unavailable\n"
         prov = config["provisioning"]
-        if not (prov["enabled"] and prov["token"] and token == prov["token"]):
+        if not (prov["token"] and token == prov["token"]):
             return 404, "text/plain", "Not found\n"
+        if not prov["enabled"]:
+            return 404, "text/plain", (
+                "Automatic setup is turned off. Turn it on in the Asterisk add-on's web UI "
+                "(Phones tab).\n"
+            )
+        if not filename:  # someone checking the address in a browser
+            return 200, "text/plain; charset=utf-8", (
+                "Asterisk add-on: automatic phone setup is working.\n\n"
+                "This is the address to enter in a desk phone's provisioning or auto-provision "
+                "setting. Phones add their own file name to it (for example "
+                "805ec0123456.cfg), so there's nothing else to see here in a browser.\n"
+            )
         parsed = provision.parse_request(filename, user_agent)
         if parsed is None:
             return 404, "text/plain", "Not found\n"
@@ -704,7 +716,7 @@ class ProvisionHandler(http.server.BaseHTTPRequestHandler):
 
     server_version = "pbx-ui-provisioning"
     backend = None  # set in serve()
-    PATH_RE = re.compile(r"^/p/([A-Za-z0-9]{16,64})/([A-Za-z0-9._-]{1,80})$")
+    PATH_RE = re.compile(r"^/p/([A-Za-z0-9]{16,64})/([A-Za-z0-9._-]{0,80})$")
 
     def log_message(self, fmt, *args):
         log.debug("provisioning %s - %s", self.client_address[0], fmt % args)
