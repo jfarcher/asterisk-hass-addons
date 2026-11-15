@@ -99,6 +99,7 @@ def default_config():
         "ari": {"enabled": False},
         "apps": [],
         "provisioning": {"enabled": False, "token": ""},
+        "network": {"sip_address": ""},
     }
 
 
@@ -510,12 +511,25 @@ def normalize(config):
     if token and not PROVISION_TOKEN_RE.match(token):
         raise ValidationError("Invalid provisioning token.")
     clean["provisioning"] = {"enabled": _bool(prov, "enabled", False), "token": token}
+    clean["network"] = validate_network(config.get("network") or {})
     for app in config.get("apps", []):
         app_id = str(app.get("id") or "")
         if not APP_ID_RE.match(app_id):
             raise ValidationError(f"Invalid app id {app_id!r}.")
         clean["apps"].append(validate_app(app, {"id": app_id}, others=clean["apps"]))
     return clean
+
+
+def validate_network(data):
+    """The address phones should use to reach Asterisk ('' = detect it)."""
+    address = _text(data, "sip_address", "")
+    address = re.sub(r"^[a-z]+://", "", address, flags=re.IGNORECASE).strip("/")
+    if address and not HOST_RE.match(address):
+        raise ValidationError(
+            "Enter an IP address like 192.168.1.10 or a host name, without a port.",
+            "sip_address",
+        )
+    return {"sip_address": address}
 
 
 def next_free_number(taken):

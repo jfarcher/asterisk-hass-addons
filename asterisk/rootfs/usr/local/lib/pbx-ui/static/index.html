@@ -577,6 +577,15 @@ function provisioningCard() {
     ),
     p.enabled && url ? [
       h("div", { class: "field", style: "margin:14px 0 6px" },
+        h("span", { class: "label" }, "Address phones connect to"),
+        h("div", { class: "inline" },
+          h("span", { class: "mono" }, data.server.address || "unknown"),
+          h("span", { class: "muted small" }, data.server.custom ? "(set by you)" : "(found automatically)"),
+          h("button", { type: "button", class: "link", onclick: addressDialog }, "Change"),
+        ),
+        h("span", { class: "hint" }, "Used in the setup address and in phones' settings. Phones need to reach it on ports 5060 and ", String(p.port), "."),
+      ),
+      h("div", { class: "field", style: "margin:14px 0 6px" },
         h("span", { class: "label" }, "Setup address"),
         h("div", { class: "inline" },
           h("input", { type: "text", class: "mono", readonly: true, value: url, "aria-label": "Setup address" }),
@@ -601,6 +610,26 @@ function provisioningCard() {
       ),
     ] : null,
   );
+}
+
+function addressDialog() {
+  const srv = data.server;
+  openDialog({
+    title: "Address phones connect to",
+    intro: "Phones use this to download their settings and to sign in. Use Home Assistant's IP address on your network, not a name that goes through a proxy or the internet.",
+    body: [
+      field("IP address or host name",
+        h("input", { type: "text", name: "sip_address", class: "mono", value: srv.custom || "", placeholder: srv.detected || "e.g. 192.168.1.10" }),
+        srv.detected ? `Leave blank to use the address found automatically: ${srv.detected}.` : "No address could be found automatically, so enter one."),
+    ],
+    footer: [cancelButton(), h("button", { type: "submit", class: "primary" }, "Save")],
+    onsubmit: async (fd) => {
+      await api("PUT", "api/network", { sip_address: fd.get("sip_address") });
+      dlg.close();
+      await refresh();
+      toast("Saved. Phones already set up pick it up the next time they download their settings.");
+    },
+  });
 }
 
 async function resetProvisioningLink() {

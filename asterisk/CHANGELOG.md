@@ -3,6 +3,13 @@
 
 # Changelog
 
+## 6.7.1
+
+### Bug Fixes
+
+- Automatic phone setup gave phones the host name used to reach Home Assistant (for example a domain behind a reverse proxy) instead of Home Assistant's own address. The add-on now finds the host's LAN IP address by itself and uses it for the setup address, phones' settings and "How to connect".
+- New **Address phones connect to** setting (Phones tab, under Automatic setup) to choose a different IP address or host name.
+
 ## 6.7.0
 
 ### New Features

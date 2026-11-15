@@ -268,5 +268,15 @@ class Provisioning(unittest.TestCase):
         self.assertIn("805ec0123456", fetched)
 
 
+class Network(unittest.TestCase):
+    def test_sip_address(self):
+        self.assertEqual(model.validate_network({"sip_address": " 192.168.1.10 "}), {"sip_address": "192.168.1.10"})
+        self.assertEqual(model.validate_network({"sip_address": "http://ha.local/"}), {"sip_address": "ha.local"})
+        self.assertEqual(model.validate_network({}), {"sip_address": ""})
+        for bad in ["192.168.1.10:5060", "a b", "x;y"]:
+            with self.assertRaises(ValidationError, msg=bad):
+                model.validate_network({"sip_address": bad})
+
+
 if __name__ == "__main__":
     unittest.main()

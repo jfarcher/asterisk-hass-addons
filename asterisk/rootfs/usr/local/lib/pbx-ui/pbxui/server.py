@@ -194,25 +194,53 @@ class Backend:
         taken.discard(exclude)
         return taken
 
-    def server_address(self):
-        """The Home Assistant host's LAN address, for phone setup details."""
-        if self._server_address is None and self.settings.supervisor_token:
+    def server_address(self, config=None):
+        """The address phones should use: the one set in the UI, else the detected one."""
+        if config is None:
             try:
-                req = urllib.request.Request(
-                    "http://supervisor/network/info",
-                    headers={"Authorization": f"Bearer {self.settings.supervisor_token}"},
-                )
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    data = json.load(resp)["data"]
-                for iface in data.get("interfaces", []):
-                    addrs = (iface.get("ipv4") or {}).get("address") or []
-                    if iface.get("primary") and addrs:
-                        self._server_address = addrs[0].split("/")[0]
-                        break
-            except (OSError, ValueError, KeyError) as err:
-                log.warning("Couldn't look up host address: %s", err)
-                self._server_address = ""
-        return self._server_address or ""
+                config = self.store.load()
+            except (ValueError, model.ValidationError):
+                config = model.default_config()
+        return config["network"]["sip_address"] or self.detected_address()
+
+    def detected_address(self):
+        """The Home Assistant host's LAN address (the add-on uses the host's network)."""
+        if self._server_address is None:
+            self._server_address = self._supervisor_address() or self._route_address()
+        return self._server_address
+
+    @staticmethod
+    def _route_address():
+        """The local address the host would use to reach the internet. Nothing is sent."""
+        for target in ("192.0.2.1", "1.1.1.1"):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.connect((target, 9))
+                    address = sock.getsockname()[0]
+            except OSError:
+                continue
+            if address and not address.startswith("127."):
+                return address
+        return ""
+
+    def _supervisor_address(self):
+        if not self.settings.supervisor_token:
+            return ""
+        try:
+            req = urllib.request.Request(
+                "http://supervisor/network/info",
+                headers={"Authorization": f"Bearer {self.settings.supervisor_token}"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.load(resp)["data"]
+        except (OSError, ValueError, KeyError) as err:
+            log.debug("Supervisor didn't give the host address: %s", err)
+            return ""
+        for iface in data.get("interfaces", []):
+            addrs = (iface.get("ipv4") or {}).get("address") or []
+            if iface.get("primary") and addrs:
+                return addrs[0].split("/")[0]
+        return ""
 
     # -- API -----------------------------------------------------------------
 
@@ -234,7 +262,13 @@ class Backend:
             "next_number": model.next_free_number(taken),
             "kinds": model.KINDS,
             "long_number_digits": model.LONG_NUMBER_MIN_DIGITS,
-            "server": {"address": self.server_address(), "sip_port": 5060, "tls_port": 5061},
+            "server": {
+                "address": self.server_address(config),
+                "detected": self.detected_address(),
+                "custom": config["network"]["sip_address"],
+                "sip_port": 5060,
+                "tls_port": 5061,
+            },
             "presets": model.PRESETS,
             "ari_url": model.ARI_URL,
             "overrides": self.overrides(),
@@ -351,6 +385,13 @@ class Backend:
             )
             return self._save(config)
 
+    def save_network(self, data):
+        with self.store.lock:
+            config = self.store.load()
+            config["network"] = model.validate_network(data)
+            self.store.save(config)
+            return {"ok": True}
+
     def save_provisioning(self, data):
         with self.store.lock:
             config = self.store.load()
@@ -411,10 +452,13 @@ class Backend:
                      provision.format_mac(mac), vendor)
             self.seen.waiting(mac, vendor, user_agent, client)
             return 404, "text/plain", "Not set up yet\n"
-        # The address the phone used to reach us is the one it can reach Asterisk on.
-        host = re.sub(r":\d+$", "", (host_header or "").strip()).strip("[]")
-        if not model.HOST_RE.match(host):
-            host = self.server_address() or "127.0.0.1"
+        # The address set in the UI, else the detected LAN address. The name the
+        # phone used to fetch this file is a last resort: it may be a proxy's.
+        host = self.server_address(config)
+        if not host:
+            host = re.sub(r":\d+$", "", (host_header or "").strip()).strip("[]")
+        if not model.HOST_RE.match(host or ""):
+            host = "127.0.0.1"
         if kind != "polycom-master":
             self.seen.fetched(mac)
             log.info("Sent settings to %s (%s, number %s)",
@@ -504,6 +548,7 @@ ROUTES = [
     ("PUT", r"/api/outbound", lambda b, m, d: b.save_outbound(d)),
     ("PUT", r"/api/ari", lambda b, m, d: b.save_ari(d)),
     ("PUT", r"/api/provisioning", lambda b, m, d: b.save_provisioning(d)),
+    ("PUT", r"/api/network", lambda b, m, d: b.save_network(d)),
     ("DELETE", r"/api/provisioning/waiting/([0-9a-f]{12})", lambda b, m, d: b.dismiss_waiting(m[1])),
     ("POST", r"/api/extensions/(\d+)/resync", lambda b, m, d: b.resync(m[1])),
     ("POST", r"/api/apps", lambda b, m, d: b.save_app(None, d)),
