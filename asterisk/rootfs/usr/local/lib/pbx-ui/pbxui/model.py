@@ -1,0 +1,566 @@
+"""Phone system model for the web UI.
+
+The UI stores everything in one small JSON file (``pbx.json``) and turns it
+into two Asterisk config files:
+
+* ``pjsip_ui.conf``      - phones (endpoints) and outside lines (trunks)
+* ``extensions_ui.conf`` - how calls to/from outside lines are routed
+
+Every value written to those files is validated against a strict allowlist
+first, so nothing typed into the UI can break out of an Asterisk config line.
+"""
+
+import json
+import os
+import re
+import secrets
+import string
+import tempfile
+import threading
+
+SCHEMA_VERSION = 1
+
+KINDS = {
+    "phone": "Desk phone or phone app",
+    "browser": "Home Assistant / web browser",
+    "doorbell": "Doorbell or intercom",
+}
+TRANSPORTS = ("udp", "tcp", "tls")
+OUTBOUND_MODES = ("direct", "prefix")
+
+# Internal numbers are 2-4 digits, so in "direct" mode anything with 5+ digits
+# (or starting with +) is unambiguously an outside number.
+EXTENSION_RE = re.compile(r"^[0-9]{2,4}$")
+LONG_NUMBER_MIN_DIGITS = 5
+FIRST_UI_EXTENSION = 200  # 100+ is used by the add-on's auto_add for HA people
+
+# Numbers that already mean something in the stock dialplan (call parking).
+RESERVED_NUMBERS = {"444", "555"} | {str(n) for n in range(701, 721)}
+
+NAME_FORBIDDEN_RE = re.compile(r'[\x00-\x1f\x7f"<>;\[\]\\]')
+PASSWORD_RE = re.compile(r"^[A-Za-z0-9!#$%&()*+,\-./:=?@^_{}~]{8,64}$")
+HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
+USERNAME_RE = re.compile(r"^[A-Za-z0-9._+*-]{1,64}$")
+CALLER_NUMBER_RE = re.compile(r"^\+?[0-9]{2,20}$")
+PREFIX_RE = re.compile(r"^[0-9]{1,2}$")
+RING_TARGET_RE = re.compile(r"^[0-9]{1,6}$")
+TRUNK_ID_RE = re.compile(r"^trunk-[a-z0-9-]{1,40}$")
+
+
+class ValidationError(Exception):
+    """A user-facing problem with submitted data."""
+
+    def __init__(self, message, field=None):
+        super().__init__(message)
+        self.message = message
+        self.field = field
+
+
+# ---------------------------------------------------------------------------
+# Defaults and helpers
+# ---------------------------------------------------------------------------
+
+
+def default_config():
+    return {
+        "version": SCHEMA_VERSION,
+        "extensions": [],
+        "trunks": [],
+        "outbound": {"mode": "direct", "prefix": "9", "trunk": None},
+    }
+
+
+def generate_password(length=16):
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _text(data, key, default=""):
+    value = data.get(key, default)
+    if value is None:
+        return default
+    if not isinstance(value, (str, int)):
+        raise ValidationError("Invalid value.", key)
+    return str(value).strip()
+
+
+def _bool(data, key, default):
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise ValidationError("Invalid value.", key)
+    return value
+
+
+def clean_name(value, field="name", label="Name"):
+    if not value:
+        raise ValidationError(f"{label} is required.", field)
+    if len(value) > 60:
+        raise ValidationError(f"{label} must be 60 characters or fewer.", field)
+    if NAME_FORBIDDEN_RE.search(value):
+        raise ValidationError(
+            f"{label} can't contain quotes, < >, [ ], \\ or ;.", field
+        )
+    return value
+
+
+def clean_password(value, field="password"):
+    if not PASSWORD_RE.match(value):
+        raise ValidationError(
+            "Password must be 8-64 characters: letters, numbers and "
+            "!#$%&()*+,-./:=?@^_{}~ (no spaces, quotes or ;).",
+            field,
+        )
+    return value
+
+
+def parse_server(value):
+    """Accept what people paste: 'sip:host', 'host:5080', 'host'."""
+    value = value.strip()
+    value = re.sub(r"^sips?:", "", value, flags=re.IGNORECASE)
+    value = value.split(";", 1)[0].strip("/")
+    port = None
+    match = re.match(r"^(.*):([0-9]{1,5})$", value)
+    if match:
+        value, port = match.group(1), int(match.group(2))
+    return value, port
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+def validate_extension(data, existing=None, taken=(), outbound=None):
+    """Return a clean extension dict built from user input.
+
+    ``existing`` is the stored extension when editing (keeps its password if
+    none was supplied). ``taken`` are numbers already used by anything else.
+    """
+    existing = existing or {}
+
+    number = _text(data, "number", existing.get("number", ""))
+    if not EXTENSION_RE.match(number):
+        raise ValidationError("Number must be 2 to 4 digits.", "number")
+    if number in RESERVED_NUMBERS:
+        raise ValidationError(
+            f"{number} is reserved for call parking. Pick another number.", "number"
+        )
+    if number in taken:
+        raise ValidationError(f"{number} is already in use.", "number")
+    if outbound and outbound.get("mode") == "prefix":
+        prefix = outbound.get("prefix") or ""
+        if prefix and number.startswith(prefix):
+            raise ValidationError(
+                f"Numbers can't start with {prefix} because that's what you "
+                "dial to reach an outside line.",
+                "number",
+            )
+
+    name = clean_name(_text(data, "name", existing.get("name", "")))
+
+    kind = _text(data, "kind", existing.get("kind", "phone"))
+    if kind not in KINDS:
+        raise ValidationError("Choose what kind of device this is.", "kind")
+
+    password = _text(data, "password", "") or existing.get("password", "")
+    password = clean_password(password or generate_password())
+
+    video = _bool(data, "video", existing.get("video", kind != "phone"))
+
+    return {
+        "number": number,
+        "name": name,
+        "kind": kind,
+        "password": password,
+        "video": video,
+    }
+
+
+def slugify(name, taken):
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:24] or "line"
+    candidate = f"trunk-{base}"
+    n = 2
+    while candidate in taken:
+        candidate = f"trunk-{base}-{n}"
+        n += 1
+    return candidate
+
+
+def validate_trunk(data, existing=None, known_numbers=(), taken_ids=()):
+    existing = existing or {}
+
+    name = clean_name(_text(data, "name", existing.get("name", "")))
+
+    host, port = parse_server(_text(data, "server", existing.get("server", "")))
+    if not host:
+        raise ValidationError("Enter your provider's server address.", "server")
+    if not HOST_RE.match(host):
+        raise ValidationError(
+            "Server should look like sip.example.com or an IP address.", "server"
+        )
+    explicit_port = data.get("port", existing.get("port"))
+    if explicit_port not in (None, ""):
+        try:
+            port = int(explicit_port)
+        except (TypeError, ValueError):
+            raise ValidationError("Port must be a number.", "port") from None
+    if port is not None and not 1 <= port <= 65535:
+        raise ValidationError("Port must be between 1 and 65535.", "port")
+
+    username = _text(data, "username", existing.get("username", ""))
+    if not USERNAME_RE.match(username):
+        raise ValidationError(
+            "Username can only contain letters, numbers and . _ + * -", "username"
+        )
+
+    auth_username = _text(data, "auth_username", existing.get("auth_username", ""))
+    if auth_username and not USERNAME_RE.match(auth_username):
+        raise ValidationError(
+            "Login name can only contain letters, numbers and . _ + * -",
+            "auth_username",
+        )
+
+    password = _text(data, "password", "") or existing.get("password", "")
+    if not password:
+        raise ValidationError("Enter the password from your provider.", "password")
+    if not re.match(r"^[^\s;\"\\]{1,128}$", password):
+        raise ValidationError(
+            "Password can't contain spaces, quotes, \\ or ;.", "password"
+        )
+
+    caller_id = _text(data, "caller_id", existing.get("caller_id", ""))
+    caller_id = caller_id.replace(" ", "")
+    if caller_id and not CALLER_NUMBER_RE.match(caller_id):
+        raise ValidationError(
+            "Phone number should be digits only, optionally starting with +.",
+            "caller_id",
+        )
+
+    transport = _text(data, "transport", existing.get("transport", "udp")).lower()
+    if transport not in TRANSPORTS:
+        raise ValidationError("Choose UDP, TCP or TLS.", "transport")
+
+    register = _bool(data, "register", existing.get("register", True))
+
+    ring = data.get("ring", existing.get("ring", []))
+    if not isinstance(ring, list):
+        raise ValidationError("Invalid list of phones to ring.", "ring")
+    clean_ring = []
+    for target in ring:
+        target = str(target).strip()
+        if not RING_TARGET_RE.match(target):
+            raise ValidationError("Invalid phone number in ring list.", "ring")
+        if known_numbers and target not in known_numbers:
+            raise ValidationError(f"There's no phone with number {target}.", "ring")
+        if target not in clean_ring:
+            clean_ring.append(target)
+
+    trunk_id = existing.get("id") or slugify(name, taken_ids)
+
+    return {
+        "id": trunk_id,
+        "name": name,
+        "server": host,
+        "port": port,
+        "transport": transport,
+        "username": username,
+        "auth_username": auth_username,
+        "password": password,
+        "caller_id": caller_id,
+        "register": register,
+        "ring": clean_ring,
+    }
+
+
+def validate_outbound(data, trunk_ids, all_numbers):
+    mode = _text(data, "mode", "direct")
+    if mode not in OUTBOUND_MODES:
+        raise ValidationError("Choose how outside numbers are dialled.", "mode")
+    prefix = _text(data, "prefix", "9")
+    if mode == "prefix":
+        if not PREFIX_RE.match(prefix):
+            raise ValidationError("Prefix must be 1 or 2 digits.", "prefix")
+        clashes = sorted(n for n in all_numbers if n.startswith(prefix))
+        if clashes:
+            raise ValidationError(
+                f"Prefix {prefix} clashes with phone number(s) "
+                f"{', '.join(clashes)}. Pick a different prefix.",
+                "prefix",
+            )
+    trunk = data.get("trunk") or None
+    if trunk is not None and trunk not in trunk_ids:
+        raise ValidationError("Choose an outside line.", "trunk")
+    if not PREFIX_RE.match(prefix):
+        prefix = "9"
+    return {"mode": mode, "prefix": prefix, "trunk": trunk}
+
+
+def normalize(config):
+    """Validate a config loaded from disk; raise ValidationError if bad."""
+    if not isinstance(config, dict):
+        raise ValidationError("pbx.json must contain a JSON object.")
+    clean = default_config()
+    seen = set()
+    for ext in config.get("extensions", []):
+        ext = validate_extension(ext, taken=seen)
+        seen.add(ext["number"])
+        clean["extensions"].append(ext)
+    ids = set()
+    for trunk in config.get("trunks", []):
+        trunk_id = str(trunk.get("id") or "")
+        if not TRUNK_ID_RE.match(trunk_id) or trunk_id in ids:
+            raise ValidationError(f"Invalid outside line id {trunk_id!r}.")
+        trunk = validate_trunk(trunk, existing={"id": trunk_id})
+        ids.add(trunk_id)
+        clean["trunks"].append(trunk)
+    clean["outbound"] = validate_outbound(config.get("outbound", {}), ids, set())
+    return clean
+
+
+def next_free_number(taken):
+    n = FIRST_UI_EXTENSION
+    while str(n) in taken or str(n) in RESERVED_NUMBERS:
+        n += 1
+    return str(n)
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+
+HEADER = """; THIS FILE IS GENERATED BY THE ASTERISK ADD-ON WEB UI.
+; Changes made here are overwritten. Use the web UI, or put your own
+; configuration in {custom} instead.
+"""
+
+CODECS = {
+    "phone": "g722,ulaw,alaw,opus",
+    "browser": "opus,ulaw,alaw,g722",
+    "doorbell": "ulaw,alaw,g722,opus",
+}
+VIDEO_CODECS = {"phone": "h264", "browser": "vp8,h264", "doorbell": "h264"}
+MAX_CONTACTS = {"phone": 3, "browser": 6, "doorbell": 1}
+
+
+def _section(name, *options):
+    """One [name] block from (key, value) pairs; None values are skipped."""
+    lines = [f"[{name}]"]
+    lines += [f"{key}={value}" for key, value in options if value is not None]
+    return "\n".join(lines) + "\n"
+
+
+def _extension_sections(ext):
+    n, kind = ext["number"], ext["kind"]
+    return [
+        f"; ---- {ext['name']} ({KINDS[kind]})",
+        _section(
+            n,
+            ("type", "endpoint"),
+            ("context", "default"),
+            ("disallow", "all"),
+            ("allow", CODECS[kind]),
+            ("allow", VIDEO_CODECS[kind] if ext["video"] else None),
+            ("aors", n),
+            ("auth", n),
+            ("callerid", f'"{ext["name"]}" <{n}>'),
+            ("direct_media", "no"),
+            ("rtp_symmetric", "yes"),
+            ("force_rport", "yes"),
+            ("rewrite_contact", "yes"),
+            ("send_rpid", "yes"),
+            ("send_pai", "yes"),
+            ("device_state_busy_at", "1"),
+            ("webrtc", "yes" if kind == "browser" else None),
+        ),
+        _section(
+            n,
+            ("type", "auth"),
+            ("auth_type", "userpass"),
+            ("username", n),
+            ("password", ext["password"]),
+        ),
+        _section(
+            n,
+            ("type", "aor"),
+            ("max_contacts", MAX_CONTACTS[kind]),
+            ("remove_existing", "yes"),
+            # Browsers come and go; polling them just produces noise.
+            ("qualify_frequency", 0 if kind == "browser" else 60),
+        ),
+    ]
+
+
+def _trunk_sections(trunk):
+    tid, host = trunk["id"], trunk["server"]
+    hostport = f"{host}:{trunk['port']}" if trunk["port"] else host
+    transport = f"transport-{trunk['transport']}"
+    sections = [f"; ---- Outside line: {trunk['name']}"]
+    if trunk["register"]:
+        sections.append(
+            _section(
+                tid,
+                ("type", "registration"),
+                ("transport", transport),
+                ("outbound_auth", tid),
+                ("server_uri", f"sip:{hostport}"),
+                ("client_uri", f"sip:{trunk['username']}@{hostport}"),
+                ("contact_user", trunk["username"]),
+                ("retry_interval", 60),
+                ("forbidden_retry_interval", 600),
+                ("expiration", 3600),
+                ("line", "yes"),
+                ("endpoint", tid),
+            )
+        )
+    sections += [
+        _section(
+            tid,
+            ("type", "auth"),
+            ("auth_type", "userpass"),
+            ("username", trunk["auth_username"] or trunk["username"]),
+            ("password", trunk["password"]),
+        ),
+        _section(
+            tid,
+            ("type", "aor"),
+            ("contact", f"sip:{hostport}"),
+            ("qualify_frequency", 60),
+        ),
+        _section(
+            tid,
+            ("type", "endpoint"),
+            ("transport", transport),
+            ("context", f"ui-incoming-{tid}"),
+            ("disallow", "all"),
+            ("allow", "g722,ulaw,alaw"),
+            ("outbound_auth", tid),
+            ("aors", tid),
+            ("from_user", trunk["username"]),
+            ("from_domain", host),
+            ("direct_media", "no"),
+            ("rtp_symmetric", "yes"),
+            ("force_rport", "yes"),
+            ("rewrite_contact", "yes"),
+        ),
+    ]
+    if not trunk["register"]:
+        sections.append(
+            _section(tid, ("type", "identify"), ("endpoint", tid), ("match", host))
+        )
+    return sections
+
+
+def render_pjsip(config):
+    parts = [HEADER.format(custom="pjsip_custom.conf")]
+    for ext in config["extensions"]:
+        parts += _extension_sections(ext)
+    for trunk in config["trunks"]:
+        parts += _trunk_sections(trunk)
+    return "\n".join(parts)
+
+
+def render_dialplan(config):
+    out = [HEADER.format(custom="extensions.conf")]
+    trunks = {t["id"]: t for t in config["trunks"]}
+    outbound = config["outbound"]
+    out_trunk = trunks.get(outbound.get("trunk"))
+
+    out.append("[ui-outbound]")
+    if out_trunk is None:
+        out.append("; No outside line is set up for outgoing calls.")
+    elif outbound["mode"] == "prefix":
+        prefix = outbound["prefix"]
+        skip = len(prefix)
+        out.append(f"; Dial {prefix} then the number to call out on \"{out_trunk['name']}\"")
+        out.append(f"exten => _{prefix}X.,1,Goto(ui-dial-out,${{EXTEN:{skip}}},1)")
+        out.append(f"exten => _{prefix}+X.,1,Goto(ui-dial-out,${{EXTEN:{skip}}},1)")
+    else:
+        dots = "X" * LONG_NUMBER_MIN_DIGITS
+        out.append(
+            f"; Numbers with {LONG_NUMBER_MIN_DIGITS}+ digits (or starting with +) "
+            f"go out on \"{out_trunk['name']}\""
+        )
+        out.append(f"exten => _{dots}.,1,Goto(ui-dial-out,${{EXTEN}},1)")
+        out.append("exten => _+X.,1,Goto(ui-dial-out,${EXTEN},1)")
+    out.append("")
+
+    out.append("[ui-dial-out]")
+    if out_trunk is not None:
+        out.append(
+            f"exten => _[+0-9].,1,NoOp(Outgoing call to ${{EXTEN}} on {out_trunk['name']})"
+        )
+        if out_trunk["caller_id"]:
+            out.append(f" same => n,Set(CALLERID(num)={out_trunk['caller_id']})")
+        out.append(f" same => n,Dial(PJSIP/${{EXTEN}}@{out_trunk['id']},120)")
+        out.append(" same => n,Hangup()")
+    out.append("")
+
+    for trunk in config["trunks"]:
+        tid = trunk["id"]
+        out.append(f"; Incoming calls on \"{trunk['name']}\"")
+        out.append(f"[ui-incoming-{tid}]")
+        out.append("exten => _[+0-9a-zA-Z*#]!,1,Goto(s,1)")
+        out.append(
+            f"exten => s,1,NoOp(Incoming call on {trunk['name']} from ${{CALLERID(all)}})"
+        )
+        if trunk["ring"]:
+            targets = "&".join(f"Local/{n}@local-extensions" for n in trunk["ring"])
+            out.append(f" same => n,Dial({targets},45)")
+        else:
+            out.append(" same => n,Answer()")
+            out.append(" same => n,Playback(vm-nobodyavail)")
+        out.append(" same => n,Hangup()")
+        out.append("")
+
+    return "\n".join(out).rstrip() + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Storage
+# ---------------------------------------------------------------------------
+
+
+def _atomic_write(path, content, mode=0o600):
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(content)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+class Store:
+    """Loads/saves pbx.json and writes the generated Asterisk files."""
+
+    def __init__(self, config_path, output_dir):
+        self.config_path = config_path
+        self.output_dir = output_dir
+        self.lock = threading.RLock()
+
+    def load(self):
+        with self.lock:
+            if not os.path.exists(self.config_path):
+                return default_config()
+            with open(self.config_path) as fh:
+                return normalize(json.load(fh))
+
+    def save(self, config):
+        with self.lock:
+            _atomic_write(self.config_path, json.dumps(config, indent=2) + "\n")
+            self.write_asterisk_files(config)
+
+    def write_asterisk_files(self, config):
+        _atomic_write(
+            os.path.join(self.output_dir, "pjsip_ui.conf"), render_pjsip(config), 0o640
+        )
+        _atomic_write(
+            os.path.join(self.output_dir, "extensions_ui.conf"),
+            render_dialplan(config),
+            0o640,
+        )

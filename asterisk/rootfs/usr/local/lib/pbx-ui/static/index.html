@@ -1,0 +1,995 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phone system</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --text: #1c1f24;
+    --muted: #5f6672;
+    --line: #e1e4e8;
+    --accent: #0a7bc2;
+    --accent-text: #ffffff;
+    --accent-soft: #e3f1fa;
+    --ok: #1a7f37;
+    --ok-soft: #e3f4e8;
+    --warn: #9a6200;
+    --warn-soft: #fbf0d9;
+    --bad: #c62828;
+    --bad-soft: #fbe5e5;
+    --idle: #6b7280;
+    --idle-soft: #eceef1;
+    --code: #f0f2f5;
+    --radius: 12px;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .05), 0 1px 3px rgba(0, 0, 0, .06);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111315;
+      --card: #1c1f23;
+      --text: #e8eaed;
+      --muted: #9aa1ab;
+      --line: #2e3238;
+      --accent: #4fb3f0;
+      --accent-text: #08121a;
+      --accent-soft: #15303f;
+      --ok: #5cc97a;
+      --ok-soft: #173322;
+      --warn: #e8b350;
+      --warn-soft: #3a2d12;
+      --bad: #f2827f;
+      --bad-soft: #3d1c1c;
+      --idle: #9aa1ab;
+      --idle-soft: #2a2e33;
+      --code: #15181b;
+      --shadow: none;
+      color-scheme: dark;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1, h2, h3 { margin: 0; line-height: 1.25; }
+  h1 { font-size: 1.5rem; }
+  h2 { font-size: 1.15rem; }
+  h3 { font-size: 1rem; }
+  p { margin: 0; }
+  .muted { color: var(--muted); }
+  .small { font-size: .875rem; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; }
+
+  header.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+
+  nav.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 20px; overflow-x: auto; }
+  nav.tabs button {
+    background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+    padding: 10px 14px; color: var(--muted); font-weight: 600; white-space: nowrap;
+  }
+  nav.tabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+  nav.tabs button:hover { background: none; color: var(--text); }
+
+  .section-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .section-head p { margin-top: 4px; max-width: 60ch; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .card + .card, .list + .card { margin-top: 16px; }
+  .list > .card { margin-top: 0; }
+  .pad { padding: 16px; }
+  h3.group { margin: 28px 0 10px; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+
+  .list { display: flex; flex-direction: column; gap: 10px; }
+  .row { display: flex; align-items: center; gap: 14px; padding: 14px 16px; flex-wrap: wrap; }
+  .row .icon-bubble { flex: none; }
+  .row .info { flex: 1 1 200px; min-width: 0; }
+  .row .info .name { font-weight: 600; overflow-wrap: anywhere; }
+  .row .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .number { font-variant-numeric: tabular-nums; }
+
+  .icon-bubble {
+    width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--accent-soft); color: var(--accent);
+  }
+  .icon-bubble.dim { background: var(--idle-soft); color: var(--idle); }
+  svg.i { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: .8rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.ok { color: var(--ok); background: var(--ok-soft); }
+  .pill.warn { color: var(--warn); background: var(--warn-soft); }
+  .pill.bad { color: var(--bad); background: var(--bad-soft); }
+  .pill.idle { color: var(--idle); background: var(--idle-soft); }
+  .pill.busy { color: var(--accent); background: var(--accent-soft); }
+  .tag { font-size: .75rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+
+  button, .btn {
+    font: inherit; font-size: .875rem; font-weight: 600; cursor: pointer;
+    border: 1px solid var(--line); background: var(--card); color: var(--text);
+    padding: 7px 14px; border-radius: 8px; display: inline-flex; align-items: center; gap: 6px;
+  }
+  button:hover { background: var(--idle-soft); }
+  button:disabled { opacity: .55; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  button.danger { color: var(--bad); }
+  button.danger:hover { background: var(--bad-soft); }
+  button.link { border: 0; background: none; padding: 0; color: var(--accent); font-weight: 600; }
+  button.icon-only { padding: 6px; }
+
+  .empty { text-align: center; padding: 36px 20px; }
+  .empty p { margin: 6px auto 18px; max-width: 46ch; }
+
+  .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+  .choice {
+    text-align: left; display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+    padding: 16px; border-radius: var(--radius); font-weight: 400; height: 100%;
+  }
+  .choice strong { font-size: .95rem; }
+  .choice span { color: var(--muted); font-size: .85rem; }
+  .choice:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+  /* Forms */
+  .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; }
+  .field > label, .field > .label { font-weight: 600; font-size: .875rem; }
+  .hint { color: var(--muted); font-size: .8rem; }
+  .error-text { color: var(--bad); font-size: .8rem; }
+  input[type=text], input[type=password], input[type=number], select {
+    font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; width: 100%;
+  }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .invalid input, .invalid select { border-color: var(--bad); }
+  .inline { display: flex; gap: 8px; align-items: center; }
+  .inline > input { flex: 1; min-width: 0; }
+  .check { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; cursor: pointer; }
+  .check input { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--accent); flex: none; }
+  .checks { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; max-height: 220px; overflow: auto; }
+  details.more { margin: 4px 0 14px; }
+  details.more summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: .875rem; margin-bottom: 12px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+  @media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .banner { border-radius: 8px; padding: 10px 12px; font-size: .875rem; margin-bottom: 14px; }
+  .banner.bad { background: var(--bad-soft); color: var(--bad); }
+  .banner.warn { background: var(--warn-soft); color: var(--warn); }
+  .banner.info { background: var(--accent-soft); color: var(--text); }
+
+  /* Setup details */
+  .kv { display: grid; grid-template-columns: max-content 1fr auto; gap: 8px 14px; align-items: center; }
+  .kv dt { color: var(--muted); font-size: .875rem; }
+  .kv > :nth-child(3n) { justify-self: end; }
+  .kv dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+  ol.steps { padding-left: 1.2em; margin: 0 0 14px; }
+  ol.steps li { margin-bottom: 4px; }
+
+  /* Dialog */
+  dialog {
+    border: 1px solid var(--line); border-radius: 16px; padding: 0; background: var(--card); color: var(--text);
+    width: min(560px, calc(100vw - 24px)); max-height: calc(100vh - 32px); box-shadow: 0 20px 50px rgba(0, 0, 0, .3);
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .45); }
+  dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 34px); }
+  .dlg-head { padding: 18px 20px 6px; }
+  .dlg-head p { margin-top: 4px; }
+  .dlg-body { padding: 12px 20px; overflow: auto; }
+  .dlg-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 20px 18px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  .dlg-foot .spacer { flex: 1; }
+
+  /* Console */
+  pre.console {
+    background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 12px 0;
+    height: 300px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8rem;
+  }
+  .quick { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  .radio-card { display: flex; gap: 12px; align-items: flex-start; padding: 12px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; margin-bottom: 8px; }
+  .radio-card:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+  .radio-card input { margin-top: 4px; accent-color: var(--accent); }
+  .radio-card .prefix-input { width: 4.5em; display: inline-block; margin: 0 4px; padding: 3px 6px; }
+
+  #toasts { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; z-index: 50; width: min(480px, calc(100vw - 32px)); }
+  .toast { background: var(--text); color: var(--bg); padding: 10px 14px; border-radius: 10px; font-size: .875rem; box-shadow: 0 6px 20px rgba(0, 0, 0, .25); }
+  .toast.bad { background: var(--bad); color: #fff; }
+  .toast.warn { background: var(--warn); color: #fff; }
+
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>Phone system</h1>
+      <p class="muted small" id="subtitle">Loading…</p>
+    </div>
+    <span id="health"></span>
+  </header>
+
+  <div id="configError" class="banner bad" hidden></div>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="phones" aria-selected="true">Phones</button>
+    <button role="tab" data-tab="lines" aria-selected="false">Outside lines</button>
+    <button role="tab" data-tab="advanced" aria-selected="false">Advanced</button>
+  </nav>
+
+  <section id="tab-phones"></section>
+  <section id="tab-lines" hidden></section>
+  <section id="tab-advanced" hidden></section>
+</div>
+
+<dialog id="dlg"></dialog>
+<div id="toasts" aria-live="polite"></div>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+
+const ICONS = {
+  phone: '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/>',
+  browser: '<rect x="4" y="2" width="16" height="20" rx="2"/><path d="M12 18h.01"/>',
+  doorbell: '<rect x="6" y="2" width="12" height="20" rx="3"/><circle cx="12" cy="7.5" r="2"/><circle cx="12" cy="15" r="2.5"/>',
+  line: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
+  person: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/>',
+};
+
+function icon(name) {
+  const span = document.createElement("span");
+  span.innerHTML = `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ""}</svg>`;
+  return span.firstChild;
+}
+
+// Build DOM nodes without ever interpolating user text into HTML.
+function h(tag, props, ...children) {
+  const el = document.createElement(tag);
+  for (const [key, value] of Object.entries(props || {})) {
+    if (value === undefined || value === null || value === false) continue;
+    if (key.startsWith("on")) el.addEventListener(key.slice(2), value);
+    else if (key === "class") el.className = value;
+    else if (key === "dataset") Object.assign(el.dataset, value);
+    else if (key in el && typeof value !== "string") el[key] = value;
+    else el.setAttribute(key, value === true ? "" : value);
+  }
+  for (const child of children.flat(Infinity)) {
+    if (child === null || child === undefined || child === false) continue;
+    el.append(child instanceof Node ? child : String(child));
+  }
+  return el;
+}
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+    credentials: "same-origin",
+  });
+  let data = {};
+  try { data = await res.json(); } catch (_) { /* non-JSON error page */ }
+  if (!res.ok) {
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.field = data.field;
+    throw err;
+  }
+  return data;
+}
+
+function toast(message, kind) {
+  const el = h("div", { class: `toast ${kind || ""}` }, message);
+  document.getElementById("toasts").append(el);
+  setTimeout(() => el.remove(), kind === "bad" || kind === "warn" ? 7000 : 3500);
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    const ta = h("textarea", { style: "position:fixed;opacity:0" });
+    ta.value = text;
+    document.body.append(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  toast("Copied");
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+const KIND_INFO = {
+  phone: {
+    title: "Desk phone or phone app",
+    blurb: "A SIP desk phone, cordless phone base, or an app such as Linphone or Zoiper.",
+    placeholder: "e.g. Office phone",
+  },
+  browser: {
+    title: "Home Assistant / web browser",
+    blurb: "The SIP card on a dashboard, a wall tablet, or the Home Assistant app.",
+    placeholder: "e.g. Kitchen tablet",
+  },
+  doorbell: {
+    title: "Doorbell or intercom",
+    blurb: "A SIP video doorbell or door station that can call your phones.",
+    placeholder: "e.g. Front door",
+  },
+};
+
+let data = null;
+let outboundDraft = null;
+
+function allPhones() {
+  if (!data) return [];
+  const mine = data.config.extensions.map((e) => ({ number: e.number, name: e.name, source: "ui" }));
+  return [...mine, ...data.others];
+}
+
+function phoneLabel(number) {
+  const p = allPhones().find((x) => x.number === number);
+  return p && p.name ? `${p.name} (${number})` : number;
+}
+
+function phoneStatus(number) {
+  const s = data.status;
+  if (!s.available) return { cls: "idle", text: "Unknown" };
+  const state = s.endpoints[number];
+  switch (state) {
+    case "Not in use": return { cls: "ok", text: "Online" };
+    case "In use": case "Busy": case "On Hold": return { cls: "busy", text: "On a call" };
+    case "Ringing": case "Ring+Inuse": return { cls: "busy", text: "Ringing" };
+    case undefined: return { cls: "idle", text: "Not loaded" };
+    default: return { cls: "idle", text: "Offline" };
+  }
+}
+
+function lineStatus(trunk) {
+  const s = data.status;
+  if (!s.available) return { cls: "idle", text: "Unknown" };
+  if (!trunk.register) {
+    const state = s.endpoints[trunk.id];
+    return state && state !== "Unavailable"
+      ? { cls: "ok", text: "Ready" }
+      : { cls: "warn", text: "Can't reach provider" };
+  }
+  switch (s.lines[trunk.id]) {
+    case "Registered": return { cls: "ok", text: "Connected" };
+    case "Rejected": return { cls: "bad", text: "Provider said no – check the server, username and password" };
+    case "Unregistered": return { cls: "warn", text: "Not connected – retrying" };
+    case "Stopped": return { cls: "bad", text: "Stopped" };
+    default: return { cls: "warn", text: "Connecting…" };
+  }
+}
+
+async function refresh() {
+  try {
+    data = await api("GET", "api/overview");
+  } catch (err) {
+    document.getElementById("subtitle").textContent = "Can't reach the add-on: " + err.message;
+    return;
+  }
+  render();
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+function render() {
+  const s = data.status;
+  const subtitle = document.getElementById("subtitle");
+  const health = document.getElementById("health");
+  health.replaceChildren();
+  if (s.available) {
+    const calls = s.calls === 1 ? "1 call in progress" : s.calls ? `${s.calls} calls in progress` : "No calls right now";
+    subtitle.textContent = `${calls} · Asterisk ${s.version || ""}`.trim();
+    health.append(h("span", { class: "pill ok" }, "Running"));
+  } else {
+    subtitle.textContent = "Live status isn't available right now.";
+    health.append(h("span", { class: "pill warn", title: s.error || "" }, "Status unavailable"));
+  }
+  const err = document.getElementById("configError");
+  err.hidden = !data.config_error;
+  err.textContent = data.config_error ? `${data.config_error} Fix or delete the file, then restart the add-on.` : "";
+
+  renderPhones();
+  // Don't rebuild the lines tab under someone who is typing in it.
+  const linesTab = document.getElementById("tab-lines");
+  if (!linesTab.contains(document.activeElement) || document.activeElement.tagName === "BUTTON") renderLines();
+  renderAdvanced();
+}
+
+function renderPhones() {
+  const root = document.getElementById("tab-phones");
+  const mine = data.config.extensions;
+  const head = h("div", { class: "section-head" },
+    h("div", {},
+      h("h2", {}, "Phones"),
+      h("p", { class: "muted small" }, "Every phone, app and doorbell gets its own short number, so they can call each other."),
+    ),
+    mine.length ? h("button", { class: "primary", onclick: () => phoneDialog() }, "Add a phone") : null,
+  );
+
+  let body;
+  if (!mine.length) {
+    body = h("div", { class: "card pad" },
+      h("h3", { style: "margin-bottom:4px" }, "What would you like to add?"),
+      h("p", { class: "muted small", style: "margin-bottom:14px" }, "Pick one to get started. You can add as many as you like."),
+      kindChoices((kind) => phoneDialog(null, kind)),
+    );
+  } else {
+    body = h("div", { class: "list" }, mine.map(phoneRow));
+  }
+
+  const others = data.others;
+  let othersBlock = null;
+  if (others.length) {
+    othersBlock = [
+      h("h3", { class: "group" }, "Also on this system"),
+      h("div", { class: "list" }, others.map((o) => {
+        const st = phoneStatus(o.number);
+        const isPerson = o.source === "person";
+        return h("div", { class: "card row" },
+          h("span", { class: "icon-bubble dim" }, icon(isPerson ? "person" : "file")),
+          h("div", { class: "info" },
+            h("div", { class: "name" }, o.name || `Number ${o.number}`),
+            h("div", { class: "muted small" },
+              h("span", { class: "number" }, `Number ${o.number}`), " · ",
+              isPerson ? "Created for a Home Assistant person (the add-on's “auto add” option)" : "Set up in Asterisk config files",
+            ),
+          ),
+          h("span", { class: `pill ${st.cls}` }, st.text),
+          h("div", { class: "actions" },
+            h("button", { onclick: () => testRing(o.number) }, "Test ring"),
+          ),
+        );
+      })),
+    ];
+  }
+  root.replaceChildren(head, body, othersBlock || "");
+}
+
+function kindChoices(onPick) {
+  return h("div", { class: "choices" }, Object.entries(KIND_INFO).map(([kind, info]) =>
+    h("button", { type: "button", class: "choice", onclick: () => onPick(kind) },
+      h("span", { class: "icon-bubble" }, icon(kind)),
+      h("strong", {}, info.title),
+      h("span", {}, info.blurb),
+    )));
+}
+
+function phoneRow(ext) {
+  const st = phoneStatus(ext.number);
+  return h("div", { class: "card row" },
+    h("span", { class: "icon-bubble" }, icon(ext.kind)),
+    h("div", { class: "info" },
+      h("div", { class: "name" }, ext.name),
+      h("div", { class: "muted small" },
+        h("span", { class: "number" }, `Number ${ext.number}`), " · ", KIND_INFO[ext.kind].title),
+    ),
+    h("span", { class: `pill ${st.cls}` }, st.text),
+    h("div", { class: "actions" },
+      h("button", { onclick: () => setupDialog(ext) }, "How to connect"),
+      h("button", { onclick: () => testRing(ext.number) }, "Test ring"),
+      h("button", { onclick: () => phoneDialog(ext) }, "Edit"),
+    ),
+  );
+}
+
+function renderLines() {
+  const root = document.getElementById("tab-lines");
+  const trunks = data.config.trunks;
+  const head = h("div", { class: "section-head" },
+    h("div", {},
+      h("h2", {}, "Outside lines"),
+      h("p", { class: "muted small" },
+        "Connect a phone service provider to call ordinary phone numbers and receive calls from them. ",
+        "Providers often call this a “SIP trunk” or “VoIP account”."),
+    ),
+    trunks.length ? h("button", { onclick: () => lineDialog() }, "Add another line") : null,
+  );
+
+  if (!trunks.length) {
+    root.replaceChildren(head, h("div", { class: "card empty" },
+      h("span", { class: "icon-bubble", style: "margin:0 auto 10px" }, icon("line")),
+      h("h3", {}, "No outside line yet"),
+      h("p", { class: "muted small" }, "You'll need the server address, username and password your provider gave you."),
+      h("button", { class: "primary", onclick: () => lineDialog() }, "Connect a provider"),
+    ));
+    return;
+  }
+
+  const cards = trunks.map((t) => {
+    const st = lineStatus(t);
+    const ring = t.ring.length
+      ? t.ring.map(phoneLabel).join(", ")
+      : "nobody – callers hear “nobody is available”";
+    return h("div", { class: "card row" },
+      h("span", { class: "icon-bubble" }, icon("line")),
+      h("div", { class: "info" },
+        h("div", { class: "name" }, t.name,
+          data.config.outbound.trunk === t.id && trunks.length > 1 ? h("span", { class: "tag", style: "margin-left:8px" }, "Used for calling out") : null),
+        h("div", { class: "muted small" }, `${t.server} · ${t.username}`),
+        h("div", { class: "small", style: "margin-top:4px" }, h("span", { class: "muted" }, "Incoming calls ring: "), ring),
+      ),
+      h("span", { class: `pill ${st.cls}` }, st.text),
+      h("div", { class: "actions" }, h("button", { onclick: () => lineDialog(t) }, "Edit")),
+    );
+  });
+
+  root.replaceChildren(head, h("div", { class: "list" }, cards), outboundCard());
+}
+
+function outboundCard() {
+  const saved = data.config.outbound;
+  const draft = outboundDraft || { ...saved, trunk: saved.trunk || data.config.trunks[0].id };
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  const update = (patch) => { outboundDraft = { ...draft, ...patch }; renderLines(); };
+
+  const prefixInput = h("input", {
+    type: "text", class: "prefix-input mono", inputmode: "numeric", maxlength: "2", value: draft.prefix,
+    "aria-label": "Prefix to dial before outside numbers",
+    onchange: (e) => update({ prefix: e.target.value.trim(), mode: "prefix" }),
+  });
+
+  const trunks = data.config.trunks;
+  return h("div", { class: "card pad" },
+    h("h3", {}, "Calling out"),
+    h("p", { class: "muted small", style: "margin:4px 0 14px" }, "How should your phones call outside numbers?"),
+    h("label", { class: "radio-card" },
+      h("input", { type: "radio", name: "obmode", checked: draft.mode === "direct", onchange: () => update({ mode: "direct" }) }),
+      h("div", {},
+        h("strong", {}, "Just dial the number"),
+        h("div", { class: "muted small" }, `Any number with ${data.long_number_digits} or more digits, or starting with +, goes out on the outside line. Shorter numbers ring your own phones.`),
+      ),
+    ),
+    h("label", { class: "radio-card" },
+      h("input", { type: "radio", name: "obmode", checked: draft.mode === "prefix", onchange: () => update({ mode: "prefix" }) }),
+      h("div", {},
+        h("strong", {}, "Dial a number first, like an office phone"),
+        h("div", { class: "muted small" }, "Dial ", prefixInput, " then the phone number."),
+      ),
+    ),
+    trunks.length > 1 ? h("div", { class: "field", style: "margin-top:10px" },
+      h("label", { for: "obtrunk" }, "Call out using"),
+      h("select", { id: "obtrunk", onchange: (e) => update({ trunk: e.target.value }) },
+        trunks.map((t) => h("option", { value: t.id, selected: t.id === draft.trunk }, t.name))),
+    ) : null,
+    h("div", { class: "inline", style: "justify-content:flex-end;margin-top:12px" },
+      dirty ? h("button", { onclick: () => { outboundDraft = null; renderLines(); } }, "Cancel") : null,
+      h("button", {
+        class: "primary", disabled: !dirty,
+        onclick: async (e) => {
+          e.target.disabled = true;
+          try {
+            const res = await api("PUT", "api/outbound", draft);
+            outboundDraft = null;
+            toast(res.warning || "Saved", res.warning ? "warn" : "");
+            await refresh();
+          } catch (err) {
+            toast(err.message, "bad");
+            e.target.disabled = false;
+          }
+        },
+      }, "Save"),
+    ),
+  );
+}
+
+let consoleLog = "Type an Asterisk command below, or pick one of the shortcuts.\n";
+
+function renderAdvanced() {
+  const root = document.getElementById("tab-advanced");
+  if (root.childElementCount) return; // static content; keep console state
+  const out = h("pre", { class: "console", id: "consoleOut" }, consoleLog);
+  const input = h("input", { type: "text", class: "mono", placeholder: "e.g. pjsip show endpoints", "aria-label": "Asterisk command" });
+
+  async function run(cmd) {
+    consoleLog += `\n> ${cmd}\n`;
+    out.textContent = consoleLog;
+    try {
+      const res = await api("POST", "api/command", { command: cmd });
+      consoleLog += (res.output || "(no output)") + "\n";
+    } catch (err) {
+      consoleLog += `Error: ${err.message}\n`;
+    }
+    out.textContent = consoleLog;
+    out.scrollTop = out.scrollHeight;
+  }
+
+  const shortcuts = [
+    ["Phones", "pjsip show endpoints"],
+    ["Outside lines", "pjsip show registrations"],
+    ["Calls", "core show channels"],
+    ["Dial plan", "dialplan show default"],
+    ["Version", "core show version"],
+  ];
+
+  root.replaceChildren(
+    h("div", { class: "section-head" },
+      h("div", {},
+        h("h2", {}, "Advanced"),
+        h("p", { class: "muted small" }, "Tools for troubleshooting and for people who know Asterisk."),
+      ),
+    ),
+    h("div", { class: "card pad" },
+      h("h3", {}, "Asterisk console"),
+      h("div", { class: "quick", style: "margin-top:10px" },
+        shortcuts.map(([label, cmd]) => h("button", { title: cmd, onclick: () => run(cmd) }, label))),
+      out,
+      h("form", {
+        class: "inline",
+        onsubmit: (e) => { e.preventDefault(); const c = input.value.trim(); if (c) { input.value = ""; run(c); } },
+      }, input, h("button", { class: "primary" }, "Run")),
+    ),
+    h("div", { class: "card pad" },
+      h("h3", {}, "Where settings are stored"),
+      h("ul", { class: "small", style: "margin:8px 0 12px;padding-left:1.2em" },
+        h("li", {}, "Everything on this page is saved in ", h("code", {}, "asterisk/ui/pbx.json"), " in the add-on's config folder (", h("code", {}, "/addon_configs/…_asterisk"), ")."),
+        h("li", {}, "It's turned into ", h("code", {}, "pjsip_ui.conf"), " and ", h("code", {}, "extensions_ui.conf"), " automatically. Don't edit those by hand."),
+        h("li", {}, "Your own Asterisk files still go in ", h("code", {}, "asterisk/custom"), ". If you replace ", h("code", {}, "pjsip.conf"), " or ", h("code", {}, "extensions.conf"), " there, include the two files above to keep this page working."),
+      ),
+      h("button", {
+        onclick: async () => {
+          try {
+            const res = await api("POST", "api/reload");
+            toast(res.problems && res.problems.length ? res.problems.join("; ") : "Asterisk configuration reloaded",
+              res.problems && res.problems.length ? "warn" : "");
+          } catch (err) { toast(err.message, "bad"); }
+        },
+      }, icon("refresh"), "Reload Asterisk configuration"),
+    ),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dialogs
+// ---------------------------------------------------------------------------
+
+const dlg = document.getElementById("dlg");
+
+function openDialog({ title, intro, body, footer, onsubmit }) {
+  const banner = h("div", { class: "banner bad", hidden: true });
+  const form = h("form", {
+    novalidate: true,
+    onsubmit: async (e) => {
+      e.preventDefault();
+      if (!onsubmit) { dlg.close(); return; }
+      const submit = form.querySelector("button[type=submit]");
+      banner.hidden = true;
+      form.querySelectorAll(".invalid").forEach((el) => el.classList.remove("invalid"));
+      form.querySelectorAll(".error-text").forEach((el) => el.remove());
+      if (submit) submit.disabled = true;
+      try {
+        await onsubmit(new FormData(form));
+      } catch (err) {
+        const input = err.field && form.querySelector(`[name="${err.field}"]`);
+        const field = input && input.closest(".field");
+        if (field) {
+          field.classList.add("invalid");
+          field.append(h("span", { class: "error-text" }, err.message));
+          const more = field.closest("details");
+          if (more) more.open = true;
+          input.focus();
+        } else {
+          banner.textContent = err.message;
+          banner.hidden = false;
+        }
+      } finally {
+        if (submit) submit.disabled = false;
+      }
+    },
+  },
+    h("div", { class: "dlg-head" },
+      h("h2", {}, title),
+      intro ? h("p", { class: "muted small" }, intro) : null,
+    ),
+    h("div", { class: "dlg-body" }, banner, body),
+    h("div", { class: "dlg-foot" }, footer),
+  );
+  dlg.replaceChildren(form);
+  if (!dlg.open) dlg.showModal();
+  const first = form.querySelector(".dlg-body input:not([type=hidden]), .dlg-body select, .dlg-body button");
+  if (first) first.focus();
+}
+
+function field(label, input, hint) {
+  const id = input.id || (input.id = "f" + Math.random().toString(36).slice(2));
+  return h("div", { class: "field" },
+    h("label", { for: id }, label),
+    input,
+    hint ? h("span", { class: "hint" }, hint) : null,
+  );
+}
+
+function cancelButton() {
+  return h("button", { type: "button", onclick: () => dlg.close() }, "Cancel");
+}
+
+function passwordInput(id, name, value, placeholder) {
+  const input = h("input", { id, type: "password", name, value: value || "", class: "mono", autocomplete: "new-password", placeholder: placeholder || "" });
+  const toggle = h("button", {
+    type: "button", class: "icon-only", title: "Show or hide",
+    onclick: () => { input.type = input.type === "password" ? "text" : "password"; },
+  }, icon("eye"));
+  return { input, row: h("div", { class: "inline" }, input, toggle) };
+}
+
+function randomPassword() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => chars[b % chars.length]).join("");
+}
+
+function phoneDialog(ext, presetKind) {
+  if (!ext && !presetKind) {
+    openDialog({
+      title: "Add a phone",
+      intro: "What are you adding?",
+      body: kindChoices((kind) => phoneDialog(null, kind)),
+      footer: cancelButton(),
+    });
+    return;
+  }
+  const kind = ext ? ext.kind : presetKind;
+  const info = KIND_INFO[kind];
+  const pw = passwordInput("phonePw", "password", ext ? ext.password : randomPassword());
+  const regen = h("button", { type: "button", onclick: () => { pw.input.value = randomPassword(); pw.input.type = "text"; } }, "New password");
+
+  const kindSelect = ext ? field("Kind of device",
+    h("select", { name: "kind" }, Object.entries(KIND_INFO).map(([k, i]) =>
+      h("option", { value: k, selected: k === kind }, i.title)))) : null;
+
+  openDialog({
+    title: ext ? `Edit ${ext.name}` : `Add a ${info.title.toLowerCase()}`,
+    intro: ext ? null : info.blurb,
+    body: [
+      field("Name", h("input", { type: "text", name: "name", value: ext ? ext.name : "", placeholder: info.placeholder, maxlength: "60", required: true }),
+        "Shown on other phones when this one calls."),
+      field("Number", h("input", { type: "text", name: "number", inputmode: "numeric", class: "mono", value: ext ? ext.number : data.next_number, maxlength: "4" }),
+        "Dial this from other phones to ring it. 2 to 4 digits."),
+      kindSelect,
+      h("details", { class: "more" },
+        h("summary", {}, "More options"),
+        h("div", { class: "field" },
+          h("label", { for: "phonePw" }, "Password"),
+          h("div", { class: "inline" }, pw.row, regen),
+          h("span", { class: "hint" }, "The device uses this to sign in. A strong one has been made for you."),
+        ),
+        h("div", { class: "field" },
+          h("label", { class: "check" },
+            h("input", { type: "checkbox", name: "video", checked: ext ? ext.video : kind !== "phone" }),
+            h("span", {}, "Allow video calls", h("span", { class: "hint", style: "display:block" }, "For devices with a camera or screen.")),
+          ),
+        ),
+      ),
+    ],
+    footer: [
+      ext ? h("button", { type: "button", class: "danger", onclick: () => confirmRemovePhone(ext) }, "Remove") : null,
+      h("span", { class: "spacer" }),
+      cancelButton(),
+      h("button", { type: "submit", class: "primary" }, ext ? "Save" : "Add"),
+    ],
+    onsubmit: async (fd) => {
+      const payload = {
+        name: fd.get("name"),
+        number: fd.get("number"),
+        kind: fd.get("kind") || kind,
+        password: fd.get("password"),
+        video: fd.get("video") === "on",
+      };
+      const res = ext
+        ? await api("PUT", `api/extensions/${encodeURIComponent(ext.number)}`, payload)
+        : await api("POST", "api/extensions", payload);
+      if (res.warning) toast(res.warning, "warn");
+      await refresh();
+      if (ext) { dlg.close(); toast("Saved"); } else setupDialog(res.extension, true);
+    },
+  });
+}
+
+function confirmRemovePhone(ext) {
+  const lines = data.config.trunks.filter((t) => t.ring.includes(ext.number)).map((t) => t.name);
+  openDialog({
+    title: `Remove ${ext.name}?`,
+    body: h("p", {}, `Number ${ext.number} will stop working and the device will be signed out.`,
+      lines.length ? ` It will also stop ringing for calls on ${lines.join(", ")}.` : ""),
+    footer: [
+      h("button", { type: "button", onclick: () => phoneDialog(ext) }, "Keep it"),
+      h("button", { type: "submit", class: "primary", style: "background:var(--bad);border-color:var(--bad)" }, "Remove"),
+    ],
+    onsubmit: async () => {
+      const res = await api("DELETE", `api/extensions/${encodeURIComponent(ext.number)}`);
+      dlg.close();
+      toast(res.warning || `${ext.name} removed`, res.warning ? "warn" : "");
+      await refresh();
+    },
+  });
+}
+
+function setupDialog(ext, justAdded) {
+  const server = data.server.address || location.hostname;
+  const secret = h("dd", {}, "•".repeat(12));
+  let shown = false;
+  const showBtn = h("button", { type: "button", class: "icon-only", title: "Show password", onclick: () => {
+    shown = !shown;
+    secret.textContent = shown ? ext.password : "•".repeat(12);
+  } }, icon("eye"));
+  const copyBtn = (value) => h("button", { type: "button", class: "icon-only", title: "Copy", onclick: () => copyText(value) }, icon("copy"));
+
+  const rows = [];
+  const add = (label, value, extra) => rows.push(h("dt", {}, label), h("dd", {}, value), extra || copyBtn(value));
+
+  let steps;
+  if (ext.kind === "browser") {
+    steps = h("ol", { class: "steps small" },
+      h("li", {}, "Open the dashboard with the SIP card, or the card's settings in the SIP Core integration."),
+      h("li", {}, "Add this number as a user, with the password below."),
+      h("li", {}, "Reload the dashboard. The phone shows as “Online” here once it's connected."),
+    );
+    add("Number / username", ext.number);
+  } else {
+    steps = h("ol", { class: "steps small" },
+      h("li", {}, `Open the ${ext.kind === "doorbell" ? "doorbell's" : "phone or app's"} SIP account settings.`),
+      h("li", {}, "Enter the details below. If it asks for a domain, registrar or proxy, use the server address."),
+      h("li", {}, "Save. It shows as “Online” here once it's connected."),
+    );
+    add("Server", server);
+    add("Port", "5060", h("span", {}));
+    add("Username", ext.number);
+  }
+  rows.push(h("dt", {}, "Password"), secret, h("div", { class: "inline" }, showBtn, copyBtn(ext.password)));
+
+  openDialog({
+    title: justAdded ? `${ext.name} is ready to connect` : `Connect ${ext.name}`,
+    body: [
+      steps,
+      h("dl", { class: "kv card pad", style: "margin:0" }, rows),
+      ext.kind === "doorbell" ? h("p", { class: "hint", style: "margin-top:12px" },
+        "To ring your phones when someone presses the button, set the doorbell to call one of their numbers.") : null,
+      ext.kind === "phone" ? h("p", { class: "hint", style: "margin-top:12px" },
+        "Connecting from outside your home network needs port forwarding or a VPN, so it's easiest to start on Wi-Fi.") : null,
+    ],
+    footer: h("button", { type: "submit", class: "primary" }, "Done"),
+  });
+}
+
+function lineDialog(trunk) {
+  const t = trunk || {};
+  const pw = passwordInput("linePw", "password", "", trunk ? "Unchanged" : "");
+  const phones = allPhones();
+  const ringDefault = trunk ? t.ring : phones.map((p) => p.number);
+
+  openDialog({
+    title: trunk ? `Edit ${t.name}` : "Connect a phone provider",
+    intro: trunk ? null : "Copy these from your provider's website or welcome email.",
+    body: [
+      field("Name", h("input", { type: "text", name: "name", value: t.name || "", placeholder: "e.g. Home phone line", maxlength: "60" }),
+        "Just for you, so you can tell lines apart."),
+      field("Server address", h("input", { type: "text", name: "server", class: "mono", value: t.server ? (t.port ? `${t.server}:${t.port}` : t.server) : "", placeholder: "e.g. sip.provider.com" }),
+        "Sometimes called the SIP server, registrar, proxy or domain."),
+      h("div", { class: "grid2" },
+        field("Username", h("input", { type: "text", name: "username", class: "mono", value: t.username || "", autocomplete: "off" }),
+          "Often your account number or phone number."),
+        h("div", { class: "field" }, h("label", { for: "linePw" }, "Password"), pw.row),
+      ),
+      field("Your phone number (optional)", h("input", { type: "text", name: "caller_id", class: "mono", value: t.caller_id || "", inputmode: "tel", placeholder: "e.g. +44 20 7946 0000" }),
+        "Shown to people you call. Leave blank to let your provider decide."),
+      h("div", { class: "field" },
+        h("span", { class: "label" }, "When someone calls this line, ring"),
+        phones.length
+          ? h("div", { class: "checks" }, phones.map((p) => h("label", { class: "check" },
+              h("input", { type: "checkbox", name: "ring", value: p.number, checked: ringDefault.includes(p.number) }),
+              h("span", {}, p.name || "Phone", " ", h("span", { class: "muted" }, `(${p.number})`)))))
+          : h("p", { class: "hint" }, "You haven't added any phones yet. Callers will hear “nobody is available” until you do."),
+      ),
+      h("details", { class: "more" },
+        h("summary", {}, "More options"),
+        field("Login name", h("input", { type: "text", name: "auth_username", class: "mono", value: t.auth_username || "", autocomplete: "off" }),
+          "Only if your provider gives you a separate “auth ID” or login name. Otherwise leave blank."),
+        field("Connection type", h("select", { name: "transport" },
+          [["udp", "UDP (most providers)"], ["tcp", "TCP"], ["tls", "TLS (encrypted)"]].map(([v, l]) =>
+            h("option", { value: v, selected: (t.transport || "udp") === v }, l)))),
+        h("div", { class: "field" },
+          h("label", { class: "check" },
+            h("input", { type: "checkbox", name: "register", checked: trunk ? t.register : true }),
+            h("span", {}, "Sign in to the provider",
+              h("span", { class: "hint", style: "display:block" }, "Leave this on unless your provider recognises you by IP address instead.")),
+          ),
+        ),
+      ),
+    ],
+    footer: [
+      trunk ? h("button", { type: "button", class: "danger", onclick: () => confirmRemoveLine(t) }, "Remove") : null,
+      h("span", { class: "spacer" }),
+      cancelButton(),
+      h("button", { type: "submit", class: "primary" }, trunk ? "Save" : "Connect"),
+    ],
+    onsubmit: async (fd) => {
+      const payload = {
+        name: fd.get("name"),
+        server: fd.get("server"),
+        port: null,
+        username: fd.get("username"),
+        password: fd.get("password"),
+        auth_username: fd.get("auth_username"),
+        caller_id: fd.get("caller_id"),
+        transport: fd.get("transport"),
+        register: fd.get("register") === "on",
+        ring: fd.getAll("ring"),
+      };
+      const res = trunk
+        ? await api("PUT", `api/trunks/${encodeURIComponent(t.id)}`, payload)
+        : await api("POST", "api/trunks", payload);
+      dlg.close();
+      toast(res.warning || (trunk ? "Saved" : "Line added. It can take a few seconds to connect."), res.warning ? "warn" : "");
+      await refresh();
+    },
+  });
+}
+
+function confirmRemoveLine(t) {
+  openDialog({
+    title: `Remove ${t.name}?`,
+    body: h("p", {}, "You won't be able to make or receive outside calls on this line."),
+    footer: [
+      h("button", { type: "button", onclick: () => lineDialog(t) }, "Keep it"),
+      h("button", { type: "submit", class: "primary", style: "background:var(--bad);border-color:var(--bad)" }, "Remove"),
+    ],
+    onsubmit: async () => {
+      const res = await api("DELETE", `api/trunks/${encodeURIComponent(t.id)}`);
+      dlg.close();
+      outboundDraft = null;
+      toast(res.warning || `${t.name} removed`, res.warning ? "warn" : "");
+      await refresh();
+    },
+  });
+}
+
+async function testRing(number) {
+  if (data.status.available && phoneStatus(number).text === "Offline") {
+    toast(`${phoneLabel(number)} is offline, so it can't ring. Check it's connected first.`, "warn");
+    return;
+  }
+  try {
+    await api("POST", `api/extensions/${encodeURIComponent(number)}/ring`);
+    toast(`Ringing ${phoneLabel(number)}… Answer to hear a test message.`);
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tabs & startup
+// ---------------------------------------------------------------------------
+
+function showTab(name) {
+  document.querySelectorAll("nav.tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
+  for (const tab of ["phones", "lines", "advanced"]) document.getElementById(`tab-${tab}`).hidden = tab !== name;
+  try { sessionStorage.setItem("pbx-tab", name); } catch (_) { /* storage blocked */ }
+}
+
+document.querySelectorAll("nav.tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+try { showTab(sessionStorage.getItem("pbx-tab") || "phones"); } catch (_) { showTab("phones"); }
+
+refresh();
+setInterval(() => { if (!document.hidden) refresh(); }, 5000);
+</script>
+</body>
+</html>

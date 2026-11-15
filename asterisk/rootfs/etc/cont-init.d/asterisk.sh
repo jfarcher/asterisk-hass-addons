@@ -110,9 +110,17 @@ fi
 
 # deleting the target before writing to it ensures we don't write to a
 # symlinked file, like when the container is restarted
+# Local-only AMI login for the web UI, regenerated on every start
+readonly ui_runtime_dir="/run/pbx-ui"
+mkdir -p "${ui_runtime_dir}"
+chmod 700 "${ui_runtime_dir}"
+ui_ami_secret=$(openssl rand -hex 24)
+(umask 077 && echo "${ui_ami_secret}" >"${ui_runtime_dir}/ami-secret")
+
 rm -f "${etc_asterisk}/manager.conf"
 bashio::var.json \
-    password "$(bashio::config 'ami_password')" |
+    password "$(bashio::config 'ami_password')" \
+    ui_password "${ui_ami_secret}" |
     tempio \
         -template "${tempio_dir}/manager.conf.gtpl" \
         -out "${etc_asterisk}/manager.conf"
@@ -183,6 +191,12 @@ if bashio::var.true "$(bashio::config 'mailbox')"; then
     mkdir -p /media/asterisk
 else
     touch /tmp/disable-asterisk-mailbox
+fi
+
+bashio::log.info "Generating phones and outside lines from the web UI settings..."
+rm -f "${etc_asterisk}/pjsip_ui.conf" "${etc_asterisk}/extensions_ui.conf"
+if ! python3 /usr/local/lib/pbx-ui/main.py --generate; then
+    bashio::exit.nok "Failed to generate the web UI's Asterisk config"
 fi
 
 # Save default configs

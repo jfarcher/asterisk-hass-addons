@@ -1,0 +1,8 @@
+#!/usr/bin/with-contenv bashio
+# ==============================================================================
+# The web UI stopped; s6 will restart it
+# ==============================================================================
+
+# shellcheck shell=bash
+
+bashio::log.info "Web UI stopped, restarting..."

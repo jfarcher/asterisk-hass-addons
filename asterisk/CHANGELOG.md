@@ -3,6 +3,26 @@
 
 # Changelog
 
+## 6.5.0
+
+### New Features
+
+- Redesign the web UI around everyday tasks, in plain language:
+  - **Phones**: add desk phones, apps, Home Assistant SIP cards and doorbells, with step-by-step connection details, live online status and a test-ring button.
+  - **Outside lines**: connect a SIP provider (trunk), choose which phones ring for incoming calls, and pick how outside numbers are dialled.
+  - **Advanced**: Asterisk console and configuration reload.
+- The web UI saves to `asterisk/ui/pbx.json` in the add-on config folder and generates `pjsip_ui.conf` and `extensions_ui.conf`. See the documentation if you use your own `pjsip.conf` or `extensions.conf`.
+
+### Bug Fixes
+
+- Remove the placeholder data and settings that didn't save from the 6.4.0 dashboard.
+- Remove the `save_device` and `delete_device` dialplan extensions. Any registered phone could dial them, and they passed unescaped input to a shell command.
+
+### Other Changes
+
+- The web UI no longer asks for the AMI password. It's served by a small built-in service behind ingress, which passes WebSocket connections (`/ws`, used by the SIP card) through to Asterisk as before.
+- The catch-all rule that rings internal phones moved from `[default]` into a `[local-extensions]` context, which `[default]` includes.
+
 ## 6.4.0
 
 ### New Features

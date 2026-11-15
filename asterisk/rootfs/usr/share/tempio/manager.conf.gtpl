@@ -19,3 +19,12 @@ permit = 10.0.0.0/255.0.0.0
 read = system,call,log,verbose,command,agent,user,config,command,dtmf,reporting,cdr,dialplan,originate,message
 write = system,call,log,verbose,command,agent,user,config,command,dtmf,reporting,cdr,dialplan,originate,message
 writetimeout = 5000
+
+; Used by the add-on web UI to show live status. Local access only.
+[pbx-ui]
+secret = {{ .ui_password }}
+deny = 0.0.0.0/0.0.0.0
+permit = 127.0.0.1/255.255.255.255
+read = system,call,reporting,originate
+write = system,call,reporting,originate
+writetimeout = 5000

@@ -3,3 +3,5 @@
 
 /media/*
 !/media/.gitkeep
+
+__pycache__/

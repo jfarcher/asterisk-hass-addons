@@ -22,6 +22,18 @@ Or you can also use it as a standalone docker container. See [4.0.0 release note
 2. Check the add-on configuration by going to the **_Configuration_** tab. You need to at least fill the _AMI Password_ and the _Auto add secret_ (if you leave _Auto add extensions_ enabled).
 3. Start the add-on by clicking in the **_START_** button.
 
+## Web UI
+
+Open the add-on's web UI (**_OPEN WEB UI_**, or the sidebar panel) to set up your phone system without editing Asterisk files.
+
+- **Phones**: add desk phones, phone apps, Home Assistant SIP cards/tablets and doorbells. Each gets a short number (starting at 200) and a generated password. **How to connect** shows exactly what to type into the device, and the list shows whether each one is online. Extensions created for Home Assistant people by the [`auto_add`](#option-auto_add) option are listed too, but are still managed by that option.
+- **Outside lines**: connect a phone service provider (SIP trunk / VoIP account) with the server, username and password they gave you. Choose which phones ring for incoming calls, and how outside numbers are dialled: either just dial the number (anything with 5 or more digits, or starting with `+`), or dial a prefix such as `9` first.
+- **Advanced**: an Asterisk console and a button to reload the configuration.
+
+Settings from the web UI are stored in `/addon_configs/b35499aa_asterisk/asterisk/ui/pbx.json` and written to `pjsip_ui.conf` and `extensions_ui.conf`, which are included by the default `pjsip.conf` and `extensions.conf`. If you replace either of those files with your own in the `custom` folder, add `#include pjsip_ui.conf` or `#include extensions_ui.conf` to keep the web UI working. Calls to outside lines are routed from the `ui-outbound` context, which the default `[default]` context includes before `local-extensions`.
+
+The web UI is only reachable through Home Assistant. Note that Home Assistant lets non-admin users open it too, so anyone with a Home Assistant login can change phones and lines.
+
 ## Configuring Asterisk
 
 The add-on copies all the default Asterisk config files to `/addon_configs/b35499aa_asterisk/asterisk/default` on the add-on startup for your reference, and reads all customized config files from `/addon_configs/b35499aa_asterisk/asterisk/custom`.

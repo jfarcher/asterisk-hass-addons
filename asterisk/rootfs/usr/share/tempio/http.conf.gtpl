@@ -9,5 +9,3 @@ tlsenable=yes
 tlsbindaddr=[::]:8089
 tlscertfile={{ .certfile }}
 tlsprivatekey={{ .keyfile }}
-enablestatic=yes
-redirect=/ static/index.html

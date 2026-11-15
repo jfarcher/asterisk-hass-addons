@@ -1,0 +1,22 @@
+#!/usr/bin/with-contenv bashio
+# ==============================================================================
+# Start the web UI (served through Home Assistant ingress)
+# ==============================================================================
+
+# shellcheck shell=bash
+
+if [[ -n "${SUPERVISOR_TOKEN:-}" ]]; then
+    PBX_UI_PORT=$(bashio::addon.ingress_port)
+else
+    PBX_UI_PORT="${PBX_UI_PORT:-8087}"
+fi
+export PBX_UI_PORT
+
+if [[ "${__BASHIO_LOG_LEVEL}" -ge 6 ]]; then
+    export PBX_UI_LOG_LEVEL=DEBUG
+fi
+
+bashio::log.info "Starting the web UI on port ${PBX_UI_PORT}..."
+
+cd /usr/local/lib/pbx-ui || exit 1
+exec python3 main.py
